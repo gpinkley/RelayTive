@@ -1,0 +1,11 @@
+# Ignore CoreML model
+RelayTive/Models/RelayTive_HuBERT.mlpackage
+
+# macOS & Xcode system files
+.DS_Store
+DerivedData/
+build/
+*.xcuserdata
+*.xcuserstate
+*.swp
+
