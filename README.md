@@ -1,4 +1,3 @@
-RelayTive
 RelayTive is a privacy-first iOS app that enables live translation of atypical (nonstandard or neurodivergent) speech patterns into clear, typical language—entirely on-device.
 It uses Apple’s CoreML and the HuBERT model for secure, customizable, real-time communication support, especially for nonverbal or speech-atypical individuals and their caregivers.
 
