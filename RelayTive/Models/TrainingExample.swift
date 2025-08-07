@@ -8,7 +8,7 @@
 import Foundation
 
 struct TrainingExample: Identifiable, Codable {
-    let id = UUID()
+    let id : UUID
     let atypicalAudio: Data              // Original atypical speech recording
     let typicalExplanation: String       // Caregiver's explanation in typical language
     let timestamp: Date                  // When this training example was created
@@ -16,6 +16,7 @@ struct TrainingExample: Identifiable, Codable {
     var audioEmbeddings: [Float]?        // HuBERT embeddings for the atypical audio (computed once, cached)
     
     init(atypicalAudio: Data, typicalExplanation: String, timestamp: Date = Date(), isVerified: Bool = false) {
+        self.id = UUID()
         self.atypicalAudio = atypicalAudio
         self.typicalExplanation = typicalExplanation
         self.timestamp = timestamp
@@ -55,7 +56,7 @@ struct TranslationSession {
 
 // MARK: - Training Data Management
 class TrainingDataManager {
-    private let embeddingsSimilarityThreshold: Float = 0.85
+    private let embeddingsSimilarityThreshold: Float = 0.70
     
     /// Find the best matching training example for given audio embeddings
     func findBestMatch(for embeddings: [Float], in trainingExamples: [TrainingExample]) -> (example: TrainingExample, similarity: Float)? {

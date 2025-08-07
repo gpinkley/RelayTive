@@ -69,20 +69,27 @@ struct TranslationView: View {
                 
                 Spacer()
                 
-                // Recent translations history
-                if !dataManager.recentTranslations.isEmpty {
+                // Training examples info (read-only)
+                if dataManager.totalTrainingExamples > 0 {
                     VStack(alignment: .leading, spacing: 12) {
-                        Text("Recent Translations")
+                        Text("Available Training Examples")
                             .font(.headline)
                         
-                        ScrollView {
-                            LazyVStack(spacing: 8) {
-                                ForEach(dataManager.recentTranslations.prefix(5)) { utterance in
-                                    RecentTranslationRow(utterance: utterance)
-                                }
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text("\(dataManager.totalTrainingExamples) trained phrases")
+                                    .font(.body)
+                                Text("\(Int(dataManager.embeddingsCompletionRate * 100))% processed")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
                             }
+                            
+                            Spacer()
+                            
+                            Text("Add more in Training tab")
+                                .font(.caption)
+                                .foregroundColor(.blue)
                         }
-                        .frame(maxHeight: 150)
                     }
                     .padding()
                     .background(Color(.systemGray6))
@@ -113,59 +120,52 @@ struct TranslationView: View {
         // Get recorded audio data
         guard let audioData = audioManager.stopRecording() else {
             print("No audio data captured")
+            currentTranslation = "No audio captured. Please try again."
             return
         }
         
-        // Process audio through HuBERT translation engine
+        // Process audio through HuBERT model to get embeddings, then lookup in training data
         Task {
-            if let translation = await translationEngine.translateAudio(audioData) {
+            // Step 1: Extract embeddings using HuBERT model
+            guard translationEngine.isModelLoaded else {
                 await MainActor.run {
-                    currentTranslation = translation
-                    
-                    // Save the translation
-                    let utterance = Utterance(
-                        originalAudio: audioData,
-                        translation: translation,
-                        timestamp: Date(),
-                        isVerified: false
-                    )
-                    dataManager.addTranslation(utterance)
+                    currentTranslation = "HuBERT model not loaded. Please check model files."
                 }
-            } else {
+                return
+            }
+            
+            // Get embeddings from the TranslationEngine (but not translation)
+            let embeddings = await extractEmbeddingsFromAudio(audioData)
+            
+            guard let embeddings = embeddings else {
                 await MainActor.run {
-                    currentTranslation = "Translation failed. Please try again."
+                    currentTranslation = "Failed to process audio. Please try again."
                 }
+                return
+            }
+            
+            // Step 2: Look up translation in training data using embeddings
+            await MainActor.run {
+                if let match = dataManager.findTranslationForEmbeddings(embeddings) {
+                    let confidencePercent = Int(match.confidence * 100)
+                    currentTranslation = "\(match.translation) (\(confidencePercent)% match)"
+                    print("Translation found: \(match.translation) with \(confidencePercent)% confidence")
+                } else {
+                    currentTranslation = "No matching training example found. Please add this phrase in the Training tab first."
+                }
+                
+                // NOTE: We do NOT save temporary translations - Translation tab is for lookup only
             }
         }
+    }
+    
+    // Helper function to extract embeddings using the TranslationEngine
+    private func extractEmbeddingsFromAudio(_ audioData: Data) async -> [Float]? {
+        // Use the new extractEmbeddings method from TranslationEngine
+        return await translationEngine.extractEmbeddings(audioData)
     }
 }
 
-struct RecentTranslationRow: View {
-    let utterance: Utterance
-    
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 4) {
-                Text(utterance.translation)
-                    .font(.body)
-                    .foregroundColor(.primary)
-                
-                Text(utterance.timestamp, style: .time)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            
-            Spacer()
-            
-            Image(systemName: utterance.isVerified ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(utterance.isVerified ? .green : .gray)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color(.systemBackground))
-        .cornerRadius(8)
-    }
-}
 
 #Preview {
     TranslationView()

@@ -9,3 +9,5 @@ build/
 *.xcuserstate
 *.swp
 
+*.md
+Git_Commit_Message.txt

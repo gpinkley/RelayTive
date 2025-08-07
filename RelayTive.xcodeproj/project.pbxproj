@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		56F360ED2E44A13C0065012C /* license.txt in Resources */ = {isa = PBXBuildFile; fileRef = 56F360EC2E44A1350065012C /* license.txt */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		56F3605E2E4457FC0065012C /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,6 +31,7 @@
 		56F360502E4457FA0065012C /* RelayTive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RelayTive.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		56F3605D2E4457FC0065012C /* RelayTiveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayTiveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		56F360672E4457FC0065012C /* RelayTiveUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayTiveUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		56F360EC2E44A1350065012C /* license.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = license.txt; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -99,6 +104,7 @@
 		56F360472E4457FA0065012C = {
 			isa = PBXGroup;
 			children = (
+				56F360EC2E44A1350065012C /* license.txt */,
 				56F360522E4457FA0065012C /* RelayTive */,
 				56F360602E4457FC0065012C /* RelayTiveTests */,
 				56F3606A2E4457FC0065012C /* RelayTiveUITests */,
@@ -236,6 +242,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				56F360ED2E44A13C0065012C /* license.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

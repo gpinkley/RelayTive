@@ -19,6 +19,7 @@ enum TrainingStep {
 struct TrainingView: View {
     @EnvironmentObject var audioManager: AudioManager
     @EnvironmentObject var dataManager: DataManager
+    @EnvironmentObject var translationEngine: TranslationEngine
     @StateObject private var speechRecognizer = SpeechRecognitionManager()
     
     @State private var currentStep: TrainingStep = .ready
@@ -156,15 +157,42 @@ struct TrainingView: View {
     private func saveTrainingExample() {
         guard let recording = atypicalRecording, !explanationText.isEmpty else { return }
         
-        let utterance = Utterance(
-            originalAudio: recording,
-            translation: explanationText,
-            timestamp: Date(),
-            isVerified: false
-        )
-        
-        dataManager.addUtterance(utterance)
-        resetTraining()
+        // Extract HuBERT embeddings from the atypical audio BEFORE saving
+        Task {
+            print("Extracting HuBERT embeddings for new training example...")
+            
+            guard let embeddings = await translationEngine.extractEmbeddings(recording) else {
+                print("❌ Failed to extract embeddings for training example")
+                await MainActor.run {
+                    // Save without embeddings for now, but this should be improved
+                    let utterance = Utterance(
+                        originalAudio: recording,
+                        translation: explanationText,
+                        timestamp: Date(),
+                        isVerified: false
+                    )
+                    dataManager.addUtterance(utterance)
+                    resetTraining()
+                }
+                return
+            }
+            
+            print("✅ Successfully extracted \\(embeddings.count) embedding dimensions")
+            
+            // Create TrainingExample with pre-computed embeddings
+            await MainActor.run {
+                var trainingExample = TrainingExample(
+                    atypicalAudio: recording,
+                    typicalExplanation: explanationText,
+                    timestamp: Date(),
+                    isVerified: false
+                )
+                trainingExample.setEmbeddings(embeddings)
+                
+                dataManager.addTrainingExample(trainingExample)
+                resetTraining()
+            }
+        }
     }
     
     private func resetTraining() {
@@ -611,4 +639,5 @@ struct RecentTrainingExamplesView: View {
     TrainingView()
         .environmentObject(DataManager())
         .environmentObject(AudioManager())
+        .environmentObject(TranslationEngine())
 }

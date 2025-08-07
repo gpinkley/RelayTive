@@ -2,7 +2,7 @@
 //  DataManager.swift
 //  RelayTive
 //
-//  Manages local storage and retrieval of utterances and translations
+//  Manages training examples (persistent) separate from ad-hoc translations (temporary)
 //
 
 import Foundation
@@ -10,101 +10,172 @@ import SwiftUI
 
 @MainActor
 class DataManager: ObservableObject {
-    @Published var allUtterances: [Utterance] = []
+    @Published var trainingExamples: [TrainingExample] = []  // Only examples from Training tab
     
     private let userDefaults = UserDefaults.standard
-    private let utterancesKey = "SavedUtterances"
+    private let trainingExamplesKey = "TrainingExamples"
+    private let trainingDataManager = TrainingDataManager()
     
     init() {
-        loadUtterances()
+        loadTrainingExamples()
     }
     
-    // MARK: - Utterance Management
+    // MARK: - Training Example Management (Persistent Data)
     
-    func addUtterance(_ utterance: Utterance) {
-        allUtterances.insert(utterance, at: 0) // Add to beginning for most recent first
-        saveUtterances()
+    func addTrainingExample(_ example: TrainingExample) {
+        trainingExamples.insert(example, at: 0) // Most recent first
+        saveTrainingExamples()
+        print("Training example added: \(example.typicalExplanation)")
     }
     
-    func updateUtterance(_ updatedUtterance: Utterance) {
-        if let index = allUtterances.firstIndex(where: { $0.id == updatedUtterance.id }) {
-            allUtterances[index] = updatedUtterance
-            saveUtterances()
+    func updateTrainingExample(_ updatedExample: TrainingExample) {
+        if let index = trainingExamples.firstIndex(where: { $0.id == updatedExample.id }) {
+            trainingExamples[index] = updatedExample
+            saveTrainingExamples()
+            print("Training example updated: \(updatedExample.typicalExplanation)")
         }
     }
     
-    func removeUtterance(_ utterance: Utterance) {
-        allUtterances.removeAll { $0.id == utterance.id }
-        saveUtterances()
+    func removeTrainingExample(_ example: TrainingExample) {
+        trainingExamples.removeAll { $0.id == example.id }
+        saveTrainingExamples()
+        print("Training example removed")
     }
     
-    // MARK: - Translation History
+    // MARK: - Translation Lookup (Uses Training Data Only)
     
-    var recentTranslations: [Utterance] {
-        return allUtterances.filter(\.isRecent)
+    func findTranslationForEmbeddings(_ embeddings: [Float]) -> (translation: String, confidence: Float)? {
+        guard let match = trainingDataManager.findBestMatch(for: embeddings, in: trainingExamples) else {
+            print("No matching training example found for embeddings")
+            return nil
+        }
+        
+        print("Found matching training example: \(match.example.typicalExplanation) (similarity: \(match.similarity))")
+        return (match.example.typicalExplanation, match.similarity)
     }
     
-    func addTranslation(_ utterance: Utterance) {
-        addUtterance(utterance)
+    func addEmbeddingsToExample(id: UUID, embeddings: [Float]) {
+        if let index = trainingExamples.firstIndex(where: { $0.id == id }) {
+            trainingExamples[index].setEmbeddings(embeddings)
+            saveTrainingExamples()
+            print("Embeddings added to training example: \(trainingExamples[index].typicalExplanation)")
+        }
     }
     
-    // MARK: - Verification
+    // MARK: - Training Data Statistics
     
-    var unverifiedUtterances: [Utterance] {
-        return allUtterances.filter { !$0.isVerified }
+    var unverifiedExamples: [TrainingExample] {
+        return trainingExamples.filter { !$0.isVerified }
     }
     
-    var verifiedUtterances: [Utterance] {
-        return allUtterances.filter(\.isVerified)
+    var verifiedExamples: [TrainingExample] {
+        return trainingExamples.filter(\.isVerified)
     }
     
-    // MARK: - Statistics
+    var examplesWithEmbeddings: [TrainingExample] {
+        return trainingExamples.filter(\.hasEmbeddings)
+    }
     
-    var totalUtterances: Int {
-        return allUtterances.count
+    // MARK: - Training Statistics
+    
+    var totalTrainingExamples: Int {
+        return trainingExamples.count
     }
     
     var verificationRate: Double {
-        guard totalUtterances > 0 else { return 0.0 }
-        let verifiedCount = verifiedUtterances.count
-        return Double(verifiedCount) / Double(totalUtterances)
+        guard totalTrainingExamples > 0 else { return 0.0 }
+        let verifiedCount = verifiedExamples.count
+        return Double(verifiedCount) / Double(totalTrainingExamples)
+    }
+    
+    var embeddingsCompletionRate: Double {
+        guard totalTrainingExamples > 0 else { return 0.0 }
+        let embeddingsCount = examplesWithEmbeddings.count
+        return Double(embeddingsCount) / Double(totalTrainingExamples)
     }
     
     // MARK: - Persistence
     
-    private func saveUtterances() {
+    private func saveTrainingExamples() {
         do {
-            let data = try JSONEncoder().encode(allUtterances)
-            userDefaults.set(data, forKey: utterancesKey)
+            let data = try JSONEncoder().encode(trainingExamples)
+            userDefaults.set(data, forKey: trainingExamplesKey)
+            print("Saved \(trainingExamples.count) training examples to disk")
         } catch {
-            print("Failed to save utterances: \(error)")
+            print("Failed to save training examples: \(error)")
         }
     }
     
-    private func loadUtterances() {
-        guard let data = userDefaults.data(forKey: utterancesKey) else {
-            // Start with empty dataset - no sample data
-            allUtterances = []
+    private func loadTrainingExamples() {
+        guard let data = userDefaults.data(forKey: trainingExamplesKey) else {
+            // Start completely empty - no predefined examples
+            trainingExamples = []
+            print("No existing training examples found - starting fresh")
             return
         }
         
         do {
-            allUtterances = try JSONDecoder().decode([Utterance].self, from: data)
+            trainingExamples = try JSONDecoder().decode([TrainingExample].self, from: data)
+            print("Loaded \(trainingExamples.count) training examples from disk")
         } catch {
-            print("Failed to load utterances: \(error)")
-            allUtterances = []
+            print("Failed to load training examples: \(error)")
+            trainingExamples = []
         }
     }
     
     // MARK: - Development Helpers
     
-    func clearAllData() {
-        allUtterances = []
-        userDefaults.removeObject(forKey: utterancesKey)
+    func clearAllTrainingData() {
+        trainingExamples = []
+        userDefaults.removeObject(forKey: trainingExamplesKey)
+        print("All training data cleared")
     }
     
-    func loadSampleData() {
-        allUtterances = Utterance.sampleData
-        saveUtterances()
+    // NOTE: No sample data loading - app must start completely empty
+    
+    // MARK: - Legacy Compatibility (for Views that still reference old model)
+    
+    var allUtterances: [Utterance] {
+        // Convert TrainingExamples to Utterances for backward compatibility
+        return trainingExamples.map { example in
+            Utterance(
+                originalAudio: example.atypicalAudio,
+                translation: example.typicalExplanation,
+                timestamp: example.timestamp,
+                isVerified: example.isVerified
+            )
+        }
+    }
+    
+    func addUtterance(_ utterance: Utterance) {
+        // Convert Utterance to TrainingExample
+        let example = TrainingExample(
+            atypicalAudio: utterance.originalAudio,
+            typicalExplanation: utterance.translation,
+            timestamp: utterance.timestamp,
+            isVerified: utterance.isVerified
+        )
+        addTrainingExample(example)
+    }
+    
+    func updateUtterance(_ updatedUtterance: Utterance) {
+        // Find corresponding TrainingExample and update
+        if let index = trainingExamples.firstIndex(where: { 
+            $0.id == updatedUtterance.id || 
+            ($0.timestamp == updatedUtterance.timestamp && $0.typicalExplanation == updatedUtterance.translation) 
+        }) {
+            var updatedExample = trainingExamples[index]
+            updatedExample.isVerified = updatedUtterance.isVerified
+            updateTrainingExample(updatedExample)
+        }
+    }
+    
+    func removeUtterance(_ utterance: Utterance) {
+        // Find corresponding TrainingExample and remove
+        if let example = trainingExamples.first(where: { 
+            $0.timestamp == utterance.timestamp && $0.typicalExplanation == utterance.translation 
+        }) {
+            removeTrainingExample(example)
+        }
     }
 }

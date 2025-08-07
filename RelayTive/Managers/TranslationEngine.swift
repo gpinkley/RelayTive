@@ -103,6 +103,37 @@ class TranslationEngine: ObservableObject {
         return translation
     }
     
+    // Extract embeddings only (without translation lookup)
+    func extractEmbeddings(_ audioData: Data) async -> [Float]? {
+        isProcessing = true
+        defer { isProcessing = false }
+        
+        let startTime = CFAbsoluteTimeGetCurrent()
+        
+        guard let model = hubertModel else {
+            print("HuBERT model not loaded")
+            return nil
+        }
+        
+        // Step 1: Convert audio data to the format expected by HuBERT
+        guard let audioArray = preprocessAudioForHuBERT(audioData) else {
+            print("Failed to preprocess audio for HuBERT")
+            return nil
+        }
+        
+        // Step 2: Extract HuBERT embeddings using CoreML
+        guard let embeddings = extractHuBERTEmbeddings(audioArray, using: model) else {
+            print("Failed to extract HuBERT embeddings")
+            return nil
+        }
+        
+        let endTime = CFAbsoluteTimeGetCurrent()
+        lastProcessingTime = endTime - startTime
+        
+        print("HuBERT embedding extraction completed in \(String(format: "%.2f", lastProcessingTime)) seconds")
+        return embeddings
+    }
+    
     // MARK: - HuBERT Processing Pipeline
     
     private func performHuBERTInference(_ audioData: Data) async -> String? {
@@ -217,40 +248,13 @@ class TranslationEngine: ObservableObject {
     }
     
     private func mapEmbeddingsToTranslation(_ embeddings: [Float]) -> String? {
-        // For now, we'll use a simple clustering approach based on embedding patterns
-        // In a full implementation, you'd have:
-        // 1. A database of known embeddings paired with translations
-        // 2. Similarity search (cosine distance, etc.)
-        // 3. Clustering/classification of embedding patterns
-        // 4. Contextual mapping based on user history
+        // This is now a placeholder - the real mapping happens in the calling code
+        // The TranslationEngine should not directly access DataManager
+        // Instead, the calling code (TranslationView) should handle the lookup
         
-        guard !embeddings.isEmpty else { return nil }
-        
-        // Calculate some basic features from the embedding
-        let embeddingMagnitude = sqrt(embeddings.map { $0 * $0 }.reduce(0, +))
-        let embeddingMean = embeddings.reduce(0, +) / Float(embeddings.count)
-        let embeddingVariance = embeddings.map { pow($0 - embeddingMean, 2) }.reduce(0, +) / Float(embeddings.count)
-        
-        print("Embedding features - Magnitude: \(embeddingMagnitude), Mean: \(embeddingMean), Variance: \(embeddingVariance)")
-        
-        // Simple rule-based mapping based on embedding characteristics
-        // This is a placeholder - real implementation would use trained classifiers
-        let translations: [String]
-        
-        if embeddingMagnitude > 10.0 {
-            translations = ["Help me please", "I need assistance", "Something is wrong"]
-        } else if embeddingVariance > 0.5 {
-            translations = ["I want some water", "I'm hungry", "I need to go outside"]
-        } else if embeddingMean > 0 {
-            translations = ["Thank you", "I love you", "That feels good"]
-        } else {
-            translations = ["I'm tired", "It hurts here", "I don't feel well"]
-        }
-        
-        let selectedTranslation = translations.randomElement() ?? "Unknown vocalization"
-        print("Mapped to translation: \(selectedTranslation)")
-        
-        return selectedTranslation
+        // For now, return nil to indicate no built-in mapping
+        // The actual mapping will be done by DataManager.findTranslationForEmbeddings
+        return nil
     }
     
     // MARK: - Model Information
