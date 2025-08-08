@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		56F360ED2E44A13C0065012C /* license.txt in Resources */ = {isa = PBXBuildFile; fileRef = 56F360EC2E44A1350065012C /* license.txt */; };
+		56F3611B2E458EC80065012C /* CLAUDE.md in Resources */ = {isa = PBXBuildFile; fileRef = 56F3611A2E458EBD0065012C /* CLAUDE.md */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -32,10 +33,11 @@
 		56F3605D2E4457FC0065012C /* RelayTiveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayTiveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		56F360672E4457FC0065012C /* RelayTiveUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayTiveUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		56F360EC2E44A1350065012C /* license.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = license.txt; sourceTree = "<group>"; };
+		56F3611A2E458EBD0065012C /* CLAUDE.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = CLAUDE.md; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		56F360C12E44801D0065012C /* Exceptions for "RelayTive" folder in "RelayTive" target */ = {
+		56F361172E458B690065012C /* Exceptions for "RelayTive" folder in "RelayTive" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Models/RelayTive_HuBERT.mlpackage,
@@ -45,7 +47,7 @@
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet section */
-		56F360C02E447B060065012C /* Exceptions for "RelayTive" folder in "Copy Bundle Resources" phase from "RelayTive" target */ = {
+		56F361192E458B6F0065012C /* Exceptions for "RelayTive" folder in "Copy Bundle Resources" phase from "RelayTive" target */ = {
 			isa = PBXFileSystemSynchronizedGroupBuildPhaseMembershipExceptionSet;
 			buildPhase = 56F3604E2E4457FA0065012C /* Resources */;
 			membershipExceptions = (
@@ -58,8 +60,8 @@
 		56F360522E4457FA0065012C /* RelayTive */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				56F360C12E44801D0065012C /* Exceptions for "RelayTive" folder in "RelayTive" target */,
-				56F360C02E447B060065012C /* Exceptions for "RelayTive" folder in "Copy Bundle Resources" phase from "RelayTive" target */,
+				56F361172E458B690065012C /* Exceptions for "RelayTive" folder in "RelayTive" target */,
+				56F361192E458B6F0065012C /* Exceptions for "RelayTive" folder in "Copy Bundle Resources" phase from "RelayTive" target */,
 			);
 			path = RelayTive;
 			sourceTree = "<group>";
@@ -104,6 +106,7 @@
 		56F360472E4457FA0065012C = {
 			isa = PBXGroup;
 			children = (
+				56F3611A2E458EBD0065012C /* CLAUDE.md */,
 				56F360EC2E44A1350065012C /* license.txt */,
 				56F360522E4457FA0065012C /* RelayTive */,
 				56F360602E4457FC0065012C /* RelayTiveTests */,
@@ -242,6 +245,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				56F3611B2E458EC80065012C /* CLAUDE.md in Resources */,
 				56F360ED2E44A13C0065012C /* license.txt in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

@@ -21,6 +21,14 @@ struct Utterance: Identifiable, Codable {
         self.timestamp = timestamp
         self.isVerified = isVerified
     }
+    
+    init(id: UUID, originalAudio: Data, translation: String, timestamp: Date, isVerified: Bool = false) {
+        self.id = id
+        self.originalAudio = originalAudio
+        self.translation = translation
+        self.timestamp = timestamp
+        self.isVerified = isVerified
+    }
 }
 
 // MARK: - Convenience Extensions

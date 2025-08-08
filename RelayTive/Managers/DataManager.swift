@@ -11,13 +11,36 @@ import SwiftUI
 @MainActor
 class DataManager: ObservableObject {
     @Published var trainingExamples: [TrainingExample] = []  // Only examples from Training tab
+    @Published var compositionalPatterns: PatternCollection = PatternCollection() // Discovered patterns
     
     private let userDefaults = UserDefaults.standard
     private let trainingExamplesKey = "TrainingExamples"
+    private let compositionalPatternsKey = "CompositionalPatterns"
     private let trainingDataManager = TrainingDataManager()
+    
+    // Compositional pipeline components
+    private var segmentationEngine: AudioSegmentationEngine?
+    private var patternDiscoveryEngine: PatternDiscoveryEngine?
+    private var compositionalMatcher: CompositionalMatcher?
     
     init() {
         loadTrainingExamples()
+        loadCompositionalPatterns()
+    }
+    
+    // MARK: - Compositional Pipeline Setup
+    
+    func initializeCompositionalPipeline(with translationEngine: TranslationEngine) {
+        print("🚀 Initializing compositional pipeline")
+        
+        segmentationEngine = AudioSegmentationEngine(translationEngine: translationEngine)
+        
+        if let segEngine = segmentationEngine {
+            patternDiscoveryEngine = PatternDiscoveryEngine(segmentationEngine: segEngine)
+            compositionalMatcher = CompositionalMatcher(segmentationEngine: segEngine)
+        }
+        
+        print("✅ Compositional pipeline initialized")
     }
     
     // MARK: - Training Example Management (Persistent Data)
@@ -42,8 +65,38 @@ class DataManager: ObservableObject {
         print("Training example removed")
     }
     
-    // MARK: - Translation Lookup (Uses Training Data Only)
+    // MARK: - Translation Lookup (Compositional + Fallback)
     
+    /// Enhanced translation lookup using compositional patterns with fallback to whole-utterance matching
+    func findTranslationForAudio(_ audioData: Data, embeddings: [Float], using translationEngine: TranslationEngine) async -> (translation: String, confidence: Float)? {
+        
+        // Ensure compositional pipeline is initialized
+        if segmentationEngine == nil {
+            initializeCompositionalPipeline(with: translationEngine)
+        }
+        
+        guard let matcher = compositionalMatcher else {
+            print("⚠️ Compositional matcher not available, falling back to traditional matching")
+            return findTranslationForEmbeddings(embeddings)
+        }
+        
+        // Try compositional matching first
+        print("🎯 Attempting compositional pattern matching")
+        let matchResult = await matcher.matchAudio(audioData, 
+                                                 against: compositionalPatterns, 
+                                                 fallbackExamples: examplesWithEmbeddings)
+        
+        if matchResult.hasMatches {
+            print("✅ Compositional match found: \(matchResult.reconstructedTranslation) (confidence: \(matchResult.overallConfidence))")
+            return (matchResult.reconstructedTranslation, matchResult.overallConfidence)
+        }
+        
+        // Fallback to traditional whole-utterance matching
+        print("🔄 Compositional matching failed, using traditional approach")
+        return findTranslationForEmbeddings(embeddings)
+    }
+    
+    /// Legacy method for whole-utterance matching (kept for backwards compatibility)
     func findTranslationForEmbeddings(_ embeddings: [Float]) -> (translation: String, confidence: Float)? {
         guard let match = trainingDataManager.findBestMatch(for: embeddings, in: trainingExamples) else {
             print("No matching training example found for embeddings")
@@ -59,6 +112,72 @@ class DataManager: ObservableObject {
             trainingExamples[index].setEmbeddings(embeddings)
             saveTrainingExamples()
             print("Embeddings added to training example: \(trainingExamples[index].typicalExplanation)")
+        }
+    }
+    
+    // MARK: - Compositional Pattern Management
+    
+    /// Perform full pattern discovery across all training examples
+    func performCompositionalPatternDiscovery(using translationEngine: TranslationEngine) async {
+        print("🔍 Starting compositional pattern discovery")
+        
+        // Ensure pipeline is initialized
+        if patternDiscoveryEngine == nil {
+            initializeCompositionalPipeline(with: translationEngine)
+        }
+        
+        guard let discoveryEngine = patternDiscoveryEngine else {
+            print("❌ Pattern discovery engine not available")
+            return
+        }
+        
+        // Only discover patterns if we have sufficient training data
+        guard examplesWithEmbeddings.count >= 2 else {
+            print("⚠️ Need at least 2 examples with embeddings for pattern discovery")
+            return
+        }
+        
+        // Run pattern discovery
+        let discoveredPatterns = await discoveryEngine.discoverPatterns(from: examplesWithEmbeddings)
+        
+        // Update our pattern collection
+        await MainActor.run {
+            compositionalPatterns = discoveredPatterns
+            saveCompositionalPatterns()
+            
+            print("✅ Pattern discovery complete: \(compositionalPatterns.significantPatterns.count) significant patterns found")
+            
+            // Log pattern quality analysis
+            let qualityReport = discoveryEngine.analyzePatternQuality(compositionalPatterns)
+            print("📊 Pattern Quality Report:")
+            print("  - Total patterns: \(qualityReport.totalPatterns)")
+            print("  - Significant patterns: \(qualityReport.significantPatterns)")  
+            print("  - Average confidence: \(qualityReport.averageConfidence)")
+            print("  - Quality score: \(qualityReport.qualityScore)")
+            
+            for recommendation in qualityReport.recommendations {
+                print("  💡 \(recommendation)")
+            }
+        }
+    }
+    
+    /// Update patterns incrementally when new training examples are added
+    func updateCompositionalPatterns(with newExamples: [TrainingExample], using translationEngine: TranslationEngine) async {
+        guard let discoveryEngine = patternDiscoveryEngine,
+              !compositionalPatterns.patterns.isEmpty else {
+            // No existing patterns, trigger full discovery
+            await performCompositionalPatternDiscovery(using: translationEngine)
+            return
+        }
+        
+        print("🔄 Updating compositional patterns with \(newExamples.count) new examples")
+        
+        let updatedPatterns = await discoveryEngine.updatePatterns(compositionalPatterns, with: newExamples)
+        
+        await MainActor.run {
+            compositionalPatterns = updatedPatterns
+            saveCompositionalPatterns()
+            print("✅ Patterns updated: \(compositionalPatterns.significantPatterns.count) significant patterns")
         }
     }
     
@@ -123,12 +242,40 @@ class DataManager: ObservableObject {
         }
     }
     
+    private func saveCompositionalPatterns() {
+        do {
+            let data = try JSONEncoder().encode(compositionalPatterns)
+            userDefaults.set(data, forKey: compositionalPatternsKey)
+            print("Saved \(compositionalPatterns.patterns.count) compositional patterns to disk")
+        } catch {
+            print("Failed to save compositional patterns: \(error)")
+        }
+    }
+    
+    private func loadCompositionalPatterns() {
+        guard let data = userDefaults.data(forKey: compositionalPatternsKey) else {
+            compositionalPatterns = PatternCollection()
+            print("No existing compositional patterns found - starting fresh")
+            return
+        }
+        
+        do {
+            compositionalPatterns = try JSONDecoder().decode(PatternCollection.self, from: data)
+            print("Loaded \(compositionalPatterns.patterns.count) compositional patterns from disk")
+        } catch {
+            print("Failed to load compositional patterns: \(error)")
+            compositionalPatterns = PatternCollection()
+        }
+    }
+    
     // MARK: - Development Helpers
     
     func clearAllTrainingData() {
         trainingExamples = []
+        compositionalPatterns = PatternCollection()
         userDefaults.removeObject(forKey: trainingExamplesKey)
-        print("All training data cleared")
+        userDefaults.removeObject(forKey: compositionalPatternsKey)
+        print("All training data and compositional patterns cleared")
     }
     
     // NOTE: No sample data loading - app must start completely empty
@@ -137,8 +284,10 @@ class DataManager: ObservableObject {
     
     var allUtterances: [Utterance] {
         // Convert TrainingExamples to Utterances for backward compatibility
+        // IMPORTANT: Use the TrainingExample's ID to maintain consistency
         return trainingExamples.map { example in
             Utterance(
+                id: example.id,
                 originalAudio: example.atypicalAudio,
                 translation: example.typicalExplanation,
                 timestamp: example.timestamp,
@@ -159,14 +308,24 @@ class DataManager: ObservableObject {
     }
     
     func updateUtterance(_ updatedUtterance: Utterance) {
-        // Find corresponding TrainingExample and update
-        if let index = trainingExamples.firstIndex(where: { 
-            $0.id == updatedUtterance.id || 
-            ($0.timestamp == updatedUtterance.timestamp && $0.typicalExplanation == updatedUtterance.translation) 
-        }) {
-            var updatedExample = trainingExamples[index]
-            updatedExample.isVerified = updatedUtterance.isVerified
-            updateTrainingExample(updatedExample)
+        // Find corresponding TrainingExample by ID and update both translation and verification
+        if let index = trainingExamples.firstIndex(where: { $0.id == updatedUtterance.id }) {
+            // Create a new TrainingExample with updated values
+            let originalExample = trainingExamples[index]
+            let updatedExample = TrainingExample(
+                id: originalExample.id,
+                atypicalAudio: originalExample.atypicalAudio,
+                typicalExplanation: updatedUtterance.translation, // Update translation
+                timestamp: originalExample.timestamp,
+                isVerified: updatedUtterance.isVerified, // Update verification status
+                audioEmbeddings: originalExample.audioEmbeddings // Preserve embeddings
+            )
+            
+            trainingExamples[index] = updatedExample
+            saveTrainingExamples()
+            print("Training example updated - translation: '\(updatedExample.typicalExplanation)', verified: \(updatedExample.isVerified)")
+        } else {
+            print("Warning: Could not find TrainingExample with ID \(updatedUtterance.id) to update")
         }
     }
     

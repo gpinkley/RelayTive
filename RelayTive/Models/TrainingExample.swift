@@ -23,6 +23,15 @@ struct TrainingExample: Identifiable, Codable {
         self.isVerified = isVerified
         self.audioEmbeddings = nil
     }
+    
+    init(id: UUID, atypicalAudio: Data, typicalExplanation: String, timestamp: Date, isVerified: Bool = false, audioEmbeddings: [Float]? = nil) {
+        self.id = id
+        self.atypicalAudio = atypicalAudio
+        self.typicalExplanation = typicalExplanation
+        self.timestamp = timestamp
+        self.isVerified = isVerified
+        self.audioEmbeddings = audioEmbeddings
+    }
 }
 
 // MARK: - Training Example Extensions
