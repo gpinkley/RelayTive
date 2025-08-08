@@ -144,18 +144,20 @@ struct TranslationView: View {
                 return
             }
             
-            // Step 2: Look up translation in training data using embeddings
-            await MainActor.run {
-                if let match = dataManager.findTranslationForEmbeddings(embeddings) {
+            // Step 2: Look up translation using compositional pattern matching with fallback
+            if let match = await dataManager.findTranslationForAudio(audioData, embeddings: embeddings, using: translationEngine) {
+                await MainActor.run {
                     let confidencePercent = Int(match.confidence * 100)
                     currentTranslation = "\(match.translation) (\(confidencePercent)% match)"
                     print("Translation found: \(match.translation) with \(confidencePercent)% confidence")
-                } else {
+                }
+            } else {
+                await MainActor.run {
                     currentTranslation = "No matching training example found. Please add this phrase in the Training tab first."
                 }
-                
-                // NOTE: We do NOT save temporary translations - Translation tab is for lookup only
             }
+            
+            // NOTE: We do NOT save temporary translations - Translation tab is for lookup only
         }
     }
     

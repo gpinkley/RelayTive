@@ -172,6 +172,12 @@ struct TrainingView: View {
                         isVerified: false
                     )
                     dataManager.addUtterance(utterance)
+                    
+                    // Trigger compositional pattern discovery even without embeddings
+                    Task {
+                        await dataManager.performCompositionalPatternDiscovery(using: translationEngine)
+                    }
+                    
                     resetTraining()
                 }
                 return
@@ -190,6 +196,12 @@ struct TrainingView: View {
                 trainingExample.setEmbeddings(embeddings)
                 
                 dataManager.addTrainingExample(trainingExample)
+                
+                // Trigger compositional pattern discovery after adding new training data
+                Task {
+                    await dataManager.performCompositionalPatternDiscovery(using: translationEngine)
+                }
+                
                 resetTraining()
             }
         }
