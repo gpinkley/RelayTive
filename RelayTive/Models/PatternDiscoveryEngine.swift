@@ -33,7 +33,21 @@ class PatternDiscoveryEngine {
             }
         }
 
-        collection.removeWeakPatterns()
+        // Create lookup maps for enhanced pattern validation
+        let segmentsById = Dictionary(uniqueKeysWithValues: allSegments.map { ($0.id, $0) })
+        let examplesById = Dictionary(uniqueKeysWithValues: trainingExamples.map { ($0.id, $0) })
+        
+        collection.removeWeakPatterns(segmentsById: segmentsById, 
+                                    examplesById: examplesById, 
+                                    cfg: config)
+        
+        #if DEBUG
+        PatternDebug.debugReportPatterns(collection.patterns,
+                                       segmentsById: segmentsById,
+                                       examplesById: examplesById,
+                                       cfg: config)
+        #endif
+        
         collection.markDiscoveryComplete()
         print("✅ Pattern discovery complete: \(collection.significantPatterns.count) significant patterns")
         return collection

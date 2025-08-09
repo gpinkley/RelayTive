@@ -11,6 +11,15 @@ import Accelerate
 
 /// Engine responsible for segmenting audio and extracting embeddings for each segment
 class AudioSegmentationEngine {
+    
+    // MARK: - Tuning Constants
+    struct SegmentationTuning {
+        static let minDuration: TimeInterval = 0.25
+        static let maxDuration: TimeInterval = 1.5
+        static let frameDuration: TimeInterval = 0.050
+        static let stepDuration: TimeInterval = 0.025
+        static let similarityThreshold: Float = 0.72
+    }
     private let translationEngine: TranslationEngine
     private let audioFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
     
@@ -22,7 +31,7 @@ class AudioSegmentationEngine {
     
     /// Extract temporal segments from a training example and compute their embeddings
     func extractSegments(from trainingExample: TrainingExample, 
-                        strategy: SegmentationStrategy = .variable(minDuration: 0.2, maxDuration: 1.0, overlap: 0.1)) async -> [AudioSegment] {
+                        strategy: SegmentationStrategy = .embeddingBased(minDuration: SegmentationTuning.minDuration, maxDuration: SegmentationTuning.maxDuration, similarityThreshold: SegmentationTuning.similarityThreshold)) async -> [AudioSegment] {
         
         print("🔍 Extracting segments from training example: \(trainingExample.typicalExplanation)")
         
@@ -33,7 +42,7 @@ class AudioSegmentationEngine {
         }
         
         // Determine segmentation points based on strategy
-        let segmentRanges = determineSegmentRanges(audioBuffer: audioBuffer, strategy: strategy)
+        let segmentRanges = await determineSegmentRanges(audioBuffer: audioBuffer, strategy: strategy)
         print("📊 Found \(segmentRanges.count) potential segments")
         
         // Extract segments and compute embeddings
@@ -65,6 +74,11 @@ class AudioSegmentationEngine {
         }
         
         print("🎯 Successfully extracted \(segments.count) valid segments")
+        
+        #if DEBUG
+        analyzeSegmentationQuality(segments)
+        #endif
+        
         return segments.filter { $0.isValid }
     }
     
@@ -112,7 +126,7 @@ class AudioSegmentationEngine {
     
     // MARK: - Segmentation Strategies
     
-    private func determineSegmentRanges(audioBuffer: AVAudioPCMBuffer, strategy: SegmentationStrategy) -> [SegmentRange] {
+    private func determineSegmentRanges(audioBuffer: AVAudioPCMBuffer, strategy: SegmentationStrategy) async -> [SegmentRange] {
         let totalDuration = Double(audioBuffer.frameLength) / audioBuffer.format.sampleRate
         
         switch strategy {
@@ -127,6 +141,13 @@ class AudioSegmentationEngine {
             
         case .adaptive:
             return createAdaptiveSegments(audioBuffer: audioBuffer, totalDuration: totalDuration)
+            
+        case .embeddingBased(let minDuration, let maxDuration, let similarityThreshold):
+            return await createEmbeddingBasedSegments(audioBuffer: audioBuffer, 
+                                                    totalDuration: totalDuration, 
+                                                    minDuration: minDuration, 
+                                                    maxDuration: maxDuration, 
+                                                    similarityThreshold: similarityThreshold)
         }
     }
     
@@ -278,6 +299,154 @@ class AudioSegmentationEngine {
     
     private func extractEmbeddingsForSegment(_ audioData: Data) async -> [Float]? {
         return await translationEngine.extractEmbeddings(audioData)
+    }
+    
+    // MARK: - Embedding-Based Segmentation
+    
+    private func createEmbeddingBasedSegments(audioBuffer: AVAudioPCMBuffer,
+                                            totalDuration: TimeInterval,
+                                            minDuration: TimeInterval,
+                                            maxDuration: TimeInterval,
+                                            similarityThreshold: Float) async -> [SegmentRange] {
+        
+        let frameEmbeddings = await extractFrameLevelEmbeddings(audioBuffer: audioBuffer)
+        
+        guard frameEmbeddings.count >= 4 else {
+            print("⚠️ Too few frame embeddings (\(frameEmbeddings.count)), falling back to fixed segments")
+            return createFixedSegments(totalDuration: totalDuration, segmentDuration: 0.5)
+        }
+        
+        let boundaries = findEmbeddingSimilarityBoundaries(embeddings: frameEmbeddings, 
+                                                         totalDuration: totalDuration,
+                                                         similarityThreshold: similarityThreshold)
+        
+        let segments = createSegmentsFromBoundaries(boundaries: boundaries,
+                                                  totalDuration: totalDuration,
+                                                  minDuration: minDuration,
+                                                  maxDuration: maxDuration)
+        
+        return segments
+    }
+    
+    private func extractFrameLevelEmbeddings(audioBuffer: AVAudioPCMBuffer) async -> [[Float]] {
+        let sampleRate = audioBuffer.format.sampleRate
+        let frameDuration = SegmentationTuning.frameDuration
+        let stepDuration = SegmentationTuning.stepDuration
+        let totalDuration = Double(audioBuffer.frameLength) / sampleRate
+        
+        var embeddings: [[Float]] = []
+        var currentTime: TimeInterval = 0
+        
+        #if DEBUG
+        var totalFrames = 0
+        #endif
+        
+        while currentTime + frameDuration <= totalDuration {
+            let endTime = min(currentTime + frameDuration, totalDuration)
+            
+            if let frameBuffer = extractAudioSegment(from: audioBuffer, 
+                                                   range: SegmentRange(startTime: currentTime, endTime: endTime)),
+               let frameData = audioBufferToData(frameBuffer),
+               let embedding = await translationEngine.extractEmbeddings(frameData) {
+                embeddings.append(embedding)
+            }
+            
+            #if DEBUG
+            totalFrames += 1
+            #endif
+            
+            currentTime += stepDuration
+        }
+        
+        #if DEBUG
+        print("🔍 Extracted embeddings for \(embeddings.count)/\(totalFrames) frames")
+        #endif
+        
+        return embeddings
+    }
+    
+    private func findEmbeddingSimilarityBoundaries(embeddings: [[Float]], 
+                                                 totalDuration: TimeInterval,
+                                                 similarityThreshold: Float) -> [TimeInterval] {
+        var boundaries: [TimeInterval] = [0]
+        
+        let stepDuration = SegmentationTuning.stepDuration
+        
+        for i in 1..<embeddings.count {
+            let similarity = cosineSimilarity(embeddings[i-1], embeddings[i])
+            
+            if similarity < similarityThreshold {
+                let timePoint = Double(i) * stepDuration
+                boundaries.append(timePoint)
+            }
+        }
+        
+        boundaries.append(totalDuration)
+        return boundaries.sorted()
+    }
+    
+    private func createSegmentsFromBoundaries(boundaries: [TimeInterval],
+                                            totalDuration: TimeInterval,
+                                            minDuration: TimeInterval,
+                                            maxDuration: TimeInterval) -> [SegmentRange] {
+        var segments: [SegmentRange] = []
+        var shortSegmentCount = 0
+        
+        for i in 0..<boundaries.count - 1 {
+            let startTime = boundaries[i]
+            var endTime = boundaries[i + 1]
+            var duration = endTime - startTime
+            
+            if duration < minDuration && i < boundaries.count - 2 {
+                endTime = boundaries[i + 2]
+                duration = endTime - startTime
+            }
+            
+            if duration > maxDuration {
+                let numSplits = Int(ceil(duration / maxDuration))
+                let splitDuration = duration / Double(numSplits)
+                
+                for j in 0..<numSplits {
+                    let splitStart = startTime + Double(j) * splitDuration
+                    let splitEnd = min(startTime + Double(j + 1) * splitDuration, endTime)
+                    segments.append(SegmentRange(startTime: splitStart, endTime: splitEnd))
+                }
+            } else if duration >= minDuration {
+                segments.append(SegmentRange(startTime: startTime, endTime: endTime))
+            } else {
+                shortSegmentCount += 1
+            }
+        }
+        
+        let avgDuration = segments.map(\.duration).reduce(0, +) / Double(segments.count)
+        
+        #if DEBUG
+        if shortSegmentCount > 0 || avgDuration < 0.2 {
+            print("⚠️ Segmentation quality: \(shortSegmentCount) short segments rejected, avg duration: \(String(format: "%.3f", avgDuration))s")
+            if avgDuration < 0.2 {
+                print("💡 Consider raising similarityThreshold or minDuration")
+            }
+        }
+        #endif
+        
+        return segments
+    }
+    
+    private func analyzeSegmentationQuality(_ segments: [AudioSegment]) {
+        guard !segments.isEmpty else { return }
+        
+        let durations = segments.map { $0.duration }
+        let avgDuration = durations.reduce(0, +) / Double(durations.count)
+        let minDuration = durations.min() ?? 0
+        let maxDuration = durations.max() ?? 0
+        
+        let variance = durations.map { pow($0 - avgDuration, 2) }.reduce(0, +) / Double(durations.count)
+        let stdDev = sqrt(variance)
+        
+        print("📊 Segmentation Quality Analysis:")
+        print("   • Total segments: \(segments.count)")
+        print("   • Duration stats: avg=\(String(format: "%.3f", avgDuration))s, min=\(String(format: "%.3f", minDuration))s, max=\(String(format: "%.3f", maxDuration))s, std=\(String(format: "%.3f", stdDev))s")
+        print("   • Target range: 0.4-0.9s, actual in range: \(durations.filter { $0 >= 0.4 && $0 <= 0.9 }.count)/\(durations.count)")
     }
 }
 

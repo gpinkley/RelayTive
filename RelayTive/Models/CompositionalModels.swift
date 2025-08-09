@@ -252,6 +252,26 @@ struct PatternCollection: Codable {
     mutating func removeWeakPatterns() {
         patterns.removeAll { !$0.isSignificant }
     }
+    
+    mutating func removeWeakPatterns(segmentsById: [UUID: AudioSegment],
+                                   examplesById: [UUID: TrainingExample],
+                                   cfg: PatternDiscoveryConfig) {
+        let initialCount = patterns.count
+        patterns.removeAll { pattern in
+            !PatternValidator.isValid(pattern, 
+                                    segmentsById: segmentsById,
+                                    examplesById: examplesById,
+                                    cfg: cfg)
+        }
+        let removedCount = initialCount - patterns.count
+        
+        #if DEBUG
+        if removedCount > 0 {
+            let removalPercentage = Float(removedCount) / Float(initialCount) * 100
+            print("🧹 Pruned \(removedCount)/\(initialCount) patterns (\(String(format: "%.1f", removalPercentage))%)")
+        }
+        #endif
+    }
 
     mutating func markDiscoveryComplete() { lastDiscoveryRun = Date() }
 
@@ -273,6 +293,7 @@ enum SegmentationStrategy: Codable {
     case fixed(window: TimeInterval, overlap: Double)
     case variable(minDuration: TimeInterval, maxDuration: TimeInterval, overlap: Double)
     case adaptive
+    case embeddingBased(minDuration: TimeInterval, maxDuration: TimeInterval, similarityThreshold: Float)
 }
 
 struct PatternDiscoveryConfig: Codable {
@@ -281,13 +302,15 @@ struct PatternDiscoveryConfig: Codable {
     let minPatternFrequency: Int
     let maxPatternsToDiscover: Int
     let minPatternConfidence: Float
+    let meaningConsistencyThreshold: Float
 
     static let `default` = PatternDiscoveryConfig(
-        segmentationStrategy: .adaptive,
+        segmentationStrategy: .embeddingBased(minDuration: 0.25, maxDuration: 1.5, similarityThreshold: 0.72),
         similarityThreshold: 0.70,
         minPatternFrequency: 2,
         maxPatternsToDiscover: 64,
-        minPatternConfidence: 0.45
+        minPatternConfidence: 0.45,
+        meaningConsistencyThreshold: 0.70
     )
 }
 
