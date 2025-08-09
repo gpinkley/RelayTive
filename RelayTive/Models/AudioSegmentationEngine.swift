@@ -22,7 +22,7 @@ class AudioSegmentationEngine {
     
     /// Extract temporal segments from a training example and compute their embeddings
     func extractSegments(from trainingExample: TrainingExample, 
-                        strategy: SegmentationStrategy = .variable(minDuration: 0.2, maxDuration: 1.0)) async -> [AudioSegment] {
+                        strategy: SegmentationStrategy = .variable(minDuration: 0.2, maxDuration: 1.0, overlap: 0.1)) async -> [AudioSegment] {
         
         print("🔍 Extracting segments from training example: \(trainingExample.typicalExplanation)")
         
@@ -116,10 +116,10 @@ class AudioSegmentationEngine {
         let totalDuration = Double(audioBuffer.frameLength) / audioBuffer.format.sampleRate
         
         switch strategy {
-        case .fixed(let duration):
-            return createFixedSegments(totalDuration: totalDuration, segmentDuration: duration)
+        case .fixed(let window, _):
+            return createFixedSegments(totalDuration: totalDuration, segmentDuration: window)
             
-        case .variable(let minDuration, let maxDuration):
+        case .variable(let minDuration, let maxDuration, _):
             return createVariableSegments(audioBuffer: audioBuffer, 
                                         totalDuration: totalDuration, 
                                         minDuration: minDuration, 
@@ -147,23 +147,20 @@ class AudioSegmentationEngine {
                                       totalDuration: TimeInterval, 
                                       minDuration: TimeInterval, 
                                       maxDuration: TimeInterval) -> [SegmentRange] {
-        // Create overlapping variable-length segments
+        // Create reasonable number of non-overlapping segments
         var ranges: [SegmentRange] = []
-        let stepSize = minDuration * 0.5 // 50% overlap
         
-        var currentTime: TimeInterval = 0
+        // Limit total segments to prevent infinite loops
+        let maxSegments = min(10, Int(totalDuration / minDuration))
+        let segmentDuration = totalDuration / Double(maxSegments)
         
-        while currentTime < totalDuration {
-            // Vary segment duration based on position and some randomness
-            let progress = currentTime / totalDuration
-            let targetDuration = minDuration + (maxDuration - minDuration) * (0.5 + 0.5 * sin(progress * .pi))
-            let endTime = min(currentTime + targetDuration, totalDuration)
+        for i in 0..<maxSegments {
+            let startTime = Double(i) * segmentDuration
+            let endTime = min(startTime + segmentDuration, totalDuration)
             
-            if endTime - currentTime >= minDuration * 0.5 { // Ensure minimum viable duration
-                ranges.append(SegmentRange(startTime: currentTime, endTime: endTime))
+            if endTime - startTime >= minDuration {
+                ranges.append(SegmentRange(startTime: startTime, endTime: endTime))
             }
-            
-            currentTime += stepSize
         }
         
         return ranges

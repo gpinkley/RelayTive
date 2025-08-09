@@ -2,8 +2,6 @@
 //  PatternDiscoveryEngine.swift
 //  RelayTive
 //
-//  Engine for discovering recurring compositional patterns across training examples
-//
 
 import Foundation
 
@@ -11,286 +9,301 @@ import Foundation
 class PatternDiscoveryEngine {
     private let config: PatternDiscoveryConfig
     private let segmentationEngine: AudioSegmentationEngine
-    
+
     init(config: PatternDiscoveryConfig = .default, segmentationEngine: AudioSegmentationEngine) {
         self.config = config
         self.segmentationEngine = segmentationEngine
     }
-    
-    // MARK: - Main Discovery Method
-    
-    /// Discover compositional patterns from a collection of training examples
+
+    // MARK: - Main Discovery
+
     func discoverPatterns(from trainingExamples: [TrainingExample]) async -> PatternCollection {
         print("🔍 Starting pattern discovery from \(trainingExamples.count) training examples")
-        
-        var patternCollection = PatternCollection()
-        
-        // Step 1: Extract segments from all training examples
+        var collection = PatternCollection()
+
         let allSegments = await extractAllSegments(from: trainingExamples)
-        print("📊 Extracted \(allSegments.count) total segments for pattern analysis")
-        
-        // Step 2: Cluster similar segments to find recurring patterns
+        print("📊 Extracted \(allSegments.count) total segments")
+
         let clusters = clusterSimilarSegments(allSegments)
         print("🎯 Found \(clusters.count) segment clusters")
-        
-        // Step 3: Convert significant clusters to compositional patterns
+
         for cluster in clusters {
             if let pattern = createPatternFromCluster(cluster, allTrainingExamples: trainingExamples) {
-                patternCollection.addPattern(pattern)
+                collection.addPattern(pattern)
             }
         }
-        
-        // Step 4: Clean up and optimize patterns
-        patternCollection.removeWeakPatterns()
-        patternCollection.markDiscoveryComplete()
-        
-        print("✅ Pattern discovery complete: \(patternCollection.significantPatterns.count) significant patterns found")
-        return patternCollection
+
+        collection.removeWeakPatterns()
+        collection.markDiscoveryComplete()
+        print("✅ Pattern discovery complete: \(collection.significantPatterns.count) significant patterns")
+        return collection
     }
     
-    // MARK: - Segment Extraction
-    
-    private func extractAllSegments(from trainingExamples: [TrainingExample]) async -> [AudioSegment] {
-        var allSegments: [AudioSegment] = []
+    /// Update existing patterns with new training examples
+    public func updatePatterns(_ existingPatterns: PatternCollection, with newExamples: [TrainingExample]) async -> PatternCollection {
+        print("🔄 Updating patterns with \(newExamples.count) new examples")
+        var updatedCollection = existingPatterns
         
-        for (index, example) in trainingExamples.enumerated() {
-            print("⏱️ Processing training example \(index + 1)/\(trainingExamples.count): \(example.typicalExplanation)")
-            
-            let segments = await segmentationEngine.extractSegments(from: example, strategy: config.segmentationStrategy)
-            allSegments.append(contentsOf: segments)
-            
-            print("  📈 Added \(segments.count) segments (total: \(allSegments.count))")
-        }
+        // Extract segments from new examples
+        let newSegments = await extractAllSegments(from: newExamples)
+        print("📊 Extracted \(newSegments.count) segments from new examples")
         
-        return allSegments.filter { $0.isValid }
-    }
-    
-    // MARK: - Clustering Algorithm
-    
-    private func clusterSimilarSegments(_ segments: [AudioSegment]) -> [[AudioSegment]] {
-        print("🔬 Clustering \(segments.count) segments using similarity threshold \(config.similarityThreshold)")
-        
-        var clusters: [[AudioSegment]] = []
-        var unclusteredSegments = segments
-        
-        while !unclusteredSegments.isEmpty {
-            let seed = unclusteredSegments.removeFirst()
-            var currentCluster = [seed]
+        // For each new segment, try to match it to existing patterns
+        for segment in newSegments {
+            var bestMatch: (pattern: CompositionalPattern, similarity: Float)?
             
-            // Find all segments similar to the seed
-            var remainingSegments: [AudioSegment] = []
-            
-            for segment in unclusteredSegments {
-                let similarity = cosineSimilarity(seed.embeddings, segment.embeddings)
+            // Find the best matching existing pattern
+            for pattern in updatedCollection.significantPatterns {
+                let similarity = cosineSimilarity(segment.embeddings, pattern.representativeEmbedding)
                 
-                if similarity > config.similarityThreshold {
-                    currentCluster.append(segment)
-                } else {
-                    remainingSegments.append(segment)
+                if similarity > config.similarityThreshold &&
+                   (bestMatch == nil || similarity > bestMatch!.similarity) {
+                    bestMatch = (pattern, similarity)
                 }
             }
             
-            unclusteredSegments = remainingSegments
-            
-            // Only keep clusters that meet minimum frequency requirement
-            if currentCluster.count >= config.minPatternFrequency {
-                clusters.append(currentCluster)
-                print("  🎯 Created cluster with \(currentCluster.count) segments (similarity > \(config.similarityThreshold))")
+            // If we found a good match, update the pattern
+            if let match = bestMatch {
+                // Find the associated meaning for this segment
+                let associatedMeaning = newExamples.first { $0.id == segment.parentExampleId }?.typicalExplanation ?? ""
+                let newMeanings = associatedMeaning.isEmpty ? [] : [associatedMeaning]
+                
+                updatedCollection.updatePattern(id: match.pattern.id, 
+                                              newSegments: [segment], 
+                                              newMeanings: newMeanings)
+                print("  🎯 Updated pattern \(match.pattern.id) with new segment (similarity: \(match.similarity))")
+            } else {
+                // No good match found - this could seed a new pattern
+                // For now, we'll skip creating new patterns from single segments
+                print("  ⚠️ No matching pattern found for new segment")
             }
         }
         
-        // Sort clusters by size (frequency) descending
-        clusters.sort { $0.count > $1.count }
+        // Run a mini discovery on remaining unmatched segments to potentially create new patterns
+        let unmatchedSegments = newSegments.filter { segment in
+            !updatedCollection.significantPatterns.contains { pattern in
+                cosineSimilarity(segment.embeddings, pattern.representativeEmbedding) > config.similarityThreshold
+            }
+        }
         
-        // Limit to maximum patterns if specified
+        if unmatchedSegments.count >= config.minPatternFrequency {
+            print("🔍 Running mini-discovery on \(unmatchedSegments.count) unmatched segments")
+            let clusters = clusterSimilarSegments(unmatchedSegments)
+            
+            for cluster in clusters {
+                if let newPattern = createPatternFromCluster(cluster, allTrainingExamples: newExamples) {
+                    updatedCollection.addPattern(newPattern)
+                    print("  ✅ Created new pattern from unmatched segments")
+                }
+            }
+        }
+        
+        // Clean up weak patterns
+        updatedCollection.removeWeakPatterns()
+        updatedCollection.markDiscoveryComplete()
+        
+        print("✅ Pattern update complete: \(updatedCollection.significantPatterns.count) significant patterns")
+        return updatedCollection
+    }
+
+    // MARK: - Segment Extraction
+
+    private func extractAllSegments(from trainingExamples: [TrainingExample]) async -> [AudioSegment] {
+        var out: [AudioSegment] = []
+        let limited = Array(trainingExamples.prefix(10))
+
+        for (i, ex) in limited.enumerated() {
+            print("⏱️ Processing example \(i + 1)/\(limited.count): \(ex.typicalExplanation)")
+            let segs = await segmentationEngine.extractSegments(from: ex, strategy: config.segmentationStrategy)
+            out.append(contentsOf: segs)
+            print("  📈 +\(segs.count) segments (total \(out.count))")
+            if out.count > 50 {
+                print("  ⚠️ Segment cap hit, stopping")
+                break
+            }
+        }
+        return out.filter { $0.isValid }
+    }
+
+    // MARK: - Clustering
+
+    private func clusterSimilarSegments(_ segments: [AudioSegment]) -> [[AudioSegment]] {
+        print("🔬 Clustering \(segments.count) segments, threshold \(config.similarityThreshold)")
+
+        var clusters: [[AudioSegment]] = []
+        var remaining = segments
+
+        while !remaining.isEmpty {
+            let seed = remaining.removeFirst()
+            var cluster = [seed]
+            var keep: [AudioSegment] = []
+
+            for s in remaining {
+                let sim = cosineSimilarity(seed.embeddings, s.embeddings)
+                if sim > config.similarityThreshold { cluster.append(s) } else { keep.append(s) }
+            }
+            remaining = keep
+
+            if cluster.count >= config.minPatternFrequency {
+                clusters.append(cluster)
+                print("  🎯 cluster size \(cluster.count)")
+            }
+        }
+
+        clusters.sort { $0.count > $1.count }
         if clusters.count > config.maxPatternsToDiscover {
             clusters = Array(clusters.prefix(config.maxPatternsToDiscover))
             print("  📏 Limited to top \(config.maxPatternsToDiscover) clusters")
         }
-        
         return clusters
     }
-    
+
     // MARK: - Pattern Creation
-    
-    private func createPatternFromCluster(_ cluster: [AudioSegment], allTrainingExamples: [TrainingExample]) -> CompositionalPattern? {
+
+    private func createPatternFromCluster(_ cluster: [AudioSegment],
+                                          allTrainingExamples: [TrainingExample]) -> CompositionalPattern? {
         guard cluster.count >= config.minPatternFrequency else { return nil }
-        
         print("🏗️ Creating pattern from cluster of \(cluster.count) segments")
-        
-        // Calculate representative embedding as average of cluster embeddings
+
         let clusterEmbeddings = cluster.map { $0.embeddings }
-        guard let representativeEmbedding = averageEmbedding(from: clusterEmbeddings) else {
-            print("❌ Failed to calculate representative embedding for cluster")
+        guard let rep = averageEmbedding(from: clusterEmbeddings) else {
+            print("❌ Failed to compute representative embedding")
             return nil
         }
-        
-        // Find associated meanings from training examples
-        let associatedMeanings = findAssociatedMeanings(for: cluster, in: allTrainingExamples)
-        
-        // Calculate pattern quality metrics
-        let averageConfidence = cluster.map { $0.confidence }.reduce(0, +) / Float(cluster.count)
-        let positionVariance = calculatePositionVariance(for: cluster)
-        
-        // Adjust confidence based on consistency
-        let consistencyFactor = max(0.1, 1.0 - positionVariance) // Lower variance = higher consistency
-        let adjustedConfidence = min(1.0, averageConfidence * consistencyFactor * Float(cluster.count) * 0.1)
-        
-        guard adjustedConfidence >= config.minPatternConfidence else {
-            print("  ⚠️ Pattern confidence too low: \(adjustedConfidence) < \(config.minPatternConfidence)")
+
+        // role-aware reduced labels, fallback to full meanings
+        let meanings = deriveCanonicalMeaning(for: cluster, from: allTrainingExamples)
+        let associated = meanings.isEmpty ? findAssociatedMeanings(for: cluster, in: allTrainingExamples) : meanings
+
+        let avgConf = cluster.map(\.confidence).reduce(0, +) / Float(cluster.count)
+        let posVar = calculatePositionVariance(for: cluster)
+        let consistency = max(0.1, 1.0 - posVar)
+        let adjusted = min(1.0, avgConf * consistency * Float(cluster.count) * 0.1)
+
+        guard adjusted >= config.minPatternConfidence else {
+            print("  ⚠️ Low confidence \(adjusted) < \(config.minPatternConfidence)")
             return nil
         }
-        
+
         let pattern = CompositionalPattern(
-            representativeEmbedding: representativeEmbedding,
+            representativeEmbedding: rep,
             segments: cluster,
-            associatedMeanings: associatedMeanings
+            associatedMeanings: associated,
+            confidence: adjusted
         )
-        
-        print("  ✅ Created pattern: frequency=\(pattern.frequency), confidence=\(pattern.confidence), meanings=\(associatedMeanings.count)")
-        
+
+        print("  ✅ pattern: freq=\(pattern.frequency) conf=\(pattern.confidence) meanings=\(associated)")
         return pattern
     }
-    
-    private func findAssociatedMeanings(for cluster: [AudioSegment], in trainingExamples: [TrainingExample]) -> [String] {
-        var meanings: [String] = []
-        
-        // Group segments by parent example
-        let segmentsByExample = Dictionary(grouping: cluster) { $0.parentExampleId }
-        
-        for (exampleId, _) in segmentsByExample {
-            if let example = trainingExamples.first(where: { $0.id == exampleId }) {
-                meanings.append(example.typicalExplanation)
-            }
+
+    private func averageEmbedding(from list: [[Float]]) -> [Float]? {
+        guard let first = list.first, !first.isEmpty else { return nil }
+        var out = Array(repeating: Float(0), count: first.count)
+        for v in list {
+            guard v.count == first.count else { return nil }
+            for i in 0..<v.count { out[i] += v[i] }
         }
-        
-        // Remove duplicates and return unique meanings
-        return Array(Set(meanings))
+        let n = Float(list.count)
+        for i in 0..<out.count { out[i] /= n }
+        return out
     }
-    
+
+    private func findAssociatedMeanings(for cluster: [AudioSegment],
+                                        in trainingExamples: [TrainingExample]) -> [String] {
+        let byId = Dictionary(uniqueKeysWithValues: trainingExamples.map { ($0.id, $0.typicalExplanation) })
+        let texts = cluster.compactMap { byId[$0.parentExampleId] }
+        return Array(Set(texts))
+    }
+
+    // role-aware reduction: early cluster -> common prefix, late -> suffix
+    private func deriveCanonicalMeaning(for cluster: [AudioSegment],
+                                        from trainingExamples: [TrainingExample]) -> [String] {
+        let exById = Dictionary(uniqueKeysWithValues: trainingExamples.map { ($0.id, $0) })
+        let texts = cluster.compactMap { exById[$0.parentExampleId]?.typicalExplanation }
+        guard !texts.isEmpty else { return [] }
+
+        let tokensList = texts.map { $0.lowercased().split(separator: " ").map(String.init) }
+
+        let avgStart = cluster.map(\.startTime).reduce(0, +) / Double(cluster.count)
+        let maxEnd = cluster.map(\.endTime).max() ?? max(0.001, avgStart)
+        let relPos = avgStart / maxEnd
+
+        func lcp(_ lists: [[String]]) -> [String] {
+            guard let f = lists.first else { return [] }
+            var out: [String] = []
+            for i in 0..<f.count {
+                let t = f[i]
+                if lists.allSatisfy({ $0.count > i && $0[i] == t }) { out.append(t) } else { break }
+            }
+            return out
+        }
+        func lcs(_ lists: [[String]]) -> [String] {
+            let rev = lists.map { Array($0.reversed()) }
+            return Array(lcp(rev).reversed())
+        }
+
+        let pref = lcp(tokensList)
+        let suf = lcs(tokensList)
+
+        let chosen: [String]
+        if relPos < 0.35 { chosen = pref }
+        else if relPos > 0.65 { chosen = suf }
+        else { chosen = pref.count <= suf.count ? pref : suf }
+
+        if chosen.isEmpty {
+            let counts = tokensList.flatMap { $0 }.reduce(into: [String:Int]()) { $0[$1, default: 0] += 1 }
+            if let top = counts.max(by: { $0.value < $1.value })?.key { return [top] }
+        }
+        let result = chosen.joined(separator: " ")
+        return result.isEmpty ? [] : [result]
+    }
+
     private func calculatePositionVariance(for cluster: [AudioSegment]) -> Float {
-        let positions = cluster.map { Float($0.startTime) }
-        let meanPosition = positions.reduce(0, +) / Float(positions.count)
-        
-        let variance = positions.map { pow($0 - meanPosition, 2) }.reduce(0, +) / Float(positions.count)
-        return sqrt(variance)
-    }
-    
-    // MARK: - Pattern Validation
-    
-    /// Validate discovered patterns against new training data
-    func validatePatterns(_ patterns: PatternCollection, against newTrainingExamples: [TrainingExample]) async -> PatternCollection {
-        print("🔍 Validating \(patterns.patterns.count) patterns against \(newTrainingExamples.count) new examples")
-        
-        var updatedCollection = patterns
-        
-        // Extract segments from new examples
-        let newSegments = await extractAllSegments(from: newTrainingExamples)
-        
-        for pattern in patterns.patterns {
-            // Find segments that match this pattern
-            let matchingSegments = newSegments.filter { segment in
-                cosineSimilarity(segment.embeddings, pattern.representativeEmbedding) > config.similarityThreshold
-            }
-            
-            if !matchingSegments.isEmpty {
-                // Update pattern with new evidence
-                let newMeanings = findAssociatedMeanings(for: matchingSegments, in: newTrainingExamples)
-                updatedCollection.updatePattern(id: pattern.id, newSegments: matchingSegments, newMeanings: newMeanings)
-                
-                print("  📈 Updated pattern \(pattern.id) with \(matchingSegments.count) new matching segments")
-            }
-        }
-        
-        return updatedCollection
-    }
-    
-    // MARK: - Incremental Discovery
-    
-    /// Add new segments to existing pattern collection
-    func updatePatterns(_ patterns: PatternCollection, with newTrainingExamples: [TrainingExample]) async -> PatternCollection {
-        print("🔄 Updating pattern collection with \(newTrainingExamples.count) new training examples")
-        
-        var updatedCollection = patterns
-        
-        // Extract segments from new examples
-        let newSegments = await extractAllSegments(from: newTrainingExamples)
-        
-        // Check if new segments fit existing patterns
-        for segment in newSegments {
-            let matchingPatterns = updatedCollection.findSimilarPatterns(to: segment.embeddings, threshold: config.similarityThreshold)
-            
-            if matchingPatterns.isEmpty {
-                // No existing pattern matches - this could seed a new pattern
-                // For now, we'll require manual pattern discovery runs for new patterns
-                continue
-            } else {
-                // Segment matches existing pattern - update the pattern
-                if let bestMatch = matchingPatterns.first {
-                    let newMeanings = findAssociatedMeanings(for: [segment], in: newTrainingExamples)
-                    updatedCollection.updatePattern(id: bestMatch.pattern.id, newSegments: [segment], newMeanings: newMeanings)
-                }
-            }
-        }
-        
-        return updatedCollection
+        let xs = cluster.map { Float($0.startTime) }
+        let mean = xs.reduce(0, +) / Float(xs.count)
+        let varSum = xs.reduce(0) { $0 + pow($1 - mean, 2) }
+        return sqrt(varSum / Float(xs.count))
     }
 }
 
-// MARK: - Pattern Analysis Utilities
+// MARK: - Analysis Utilities
 
 extension PatternDiscoveryEngine {
-    
-    /// Analyze pattern quality and suggest improvements
     func analyzePatternQuality(_ patterns: PatternCollection) -> PatternQualityReport {
-        let totalPatterns = patterns.patterns.count
-        let significantPatterns = patterns.significantPatterns.count
-        
-        let averageFrequency = patterns.patterns.isEmpty ? 0 : 
-            patterns.patterns.map { $0.frequency }.reduce(0, +) / patterns.patterns.count
-        
-        let averageConfidence = patterns.patterns.isEmpty ? 0 : 
-            patterns.patterns.map { $0.confidence }.reduce(0, +) / Float(patterns.patterns.count)
-        
-        let coverageAnalysis = analyzeCoverage(patterns, totalPatterns: totalPatterns)
-        
+        let total = patterns.patterns.count
+        let sig = patterns.significantPatterns.count
+        let avgFreq = total == 0 ? 0 : patterns.patterns.map(\.frequency).reduce(0, +) / total
+        let avgConf: Float = total == 0 ? 0 : patterns.patterns.map(\.confidence).reduce(0, +) / Float(total)
+        let coverage = total > 0 ? Float(sig) / Float(total) : 0
+
         return PatternQualityReport(
-            totalPatterns: totalPatterns,
-            significantPatterns: significantPatterns,
-            averageFrequency: averageFrequency,
-            averageConfidence: averageConfidence,
-            coverage: coverageAnalysis,
+            totalPatterns: total,
+            significantPatterns: sig,
+            averageFrequency: avgFreq,
+            averageConfidence: avgConf,
+            coverage: coverage,
             recommendations: generateRecommendations(patterns)
         )
     }
-    
-    private func analyzeCoverage(_ patterns: PatternCollection, totalPatterns: Int) -> Float {
-        // Simple coverage metric: ratio of significant to total patterns
-        return totalPatterns > 0 ? Float(patterns.significantPatterns.count) / Float(totalPatterns) : 0
-    }
-    
+
     private func generateRecommendations(_ patterns: PatternCollection) -> [String] {
-        var recommendations: [String] = []
-        
+        var recs: [String] = []
         if patterns.significantPatterns.count < 3 {
-            recommendations.append("Consider adding more diverse training examples to discover additional patterns")
+            recs.append("Add more diverse training examples to discover additional patterns")
         }
-        
-        let lowConfidencePatterns = patterns.patterns.filter { $0.confidence < 0.5 }.count
-        if lowConfidencePatterns > patterns.patterns.count / 2 {
-            recommendations.append("Many patterns have low confidence - consider adjusting similarity thresholds")
+        let lowConf = patterns.patterns.filter { $0.confidence < 0.5 }.count
+        if lowConf > patterns.patterns.count / 2 {
+            recs.append("Many patterns have low confidence, consider tuning similarity thresholds")
         }
-        
-        let lowFrequencyPatterns = patterns.patterns.filter { $0.frequency < 3 }.count
-        if lowFrequencyPatterns > patterns.patterns.count / 3 {
-            recommendations.append("Consider increasing minimum pattern frequency to reduce noise")
+        let lowFreq = patterns.patterns.filter { $0.frequency < 3 }.count
+        if lowFreq > patterns.patterns.count / 3 {
+            recs.append("Consider increasing minimum pattern frequency to reduce noise")
         }
-        
-        return recommendations
+        return recs
     }
 }
 
-// MARK: - Supporting Types
+// MARK: - Report
 
 struct PatternQualityReport {
     let totalPatterns: Int
@@ -299,8 +312,5 @@ struct PatternQualityReport {
     let averageConfidence: Float
     let coverage: Float
     let recommendations: [String]
-    
-    var qualityScore: Float {
-        return (coverage * 0.4) + (averageConfidence * 0.6)
-    }
+    var qualityScore: Float { (coverage * 0.4) + (averageConfidence * 0.6) }
 }

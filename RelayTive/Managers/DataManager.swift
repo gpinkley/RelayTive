@@ -22,6 +22,7 @@ class DataManager: ObservableObject {
     private var segmentationEngine: AudioSegmentationEngine?
     private var patternDiscoveryEngine: PatternDiscoveryEngine?
     private var compositionalMatcher: CompositionalMatcher?
+    private var isProcessingPatterns = false // Prevent concurrent pattern discovery
     
     init() {
         loadTrainingExamples()
@@ -121,6 +122,15 @@ class DataManager: ObservableObject {
     func performCompositionalPatternDiscovery(using translationEngine: TranslationEngine) async {
         print("🔍 Starting compositional pattern discovery")
         
+        // Prevent running if already processing
+        if isProcessingPatterns {
+            print("⚠️ Pattern discovery already in progress, skipping")
+            return
+        }
+        
+        isProcessingPatterns = true
+        defer { isProcessingPatterns = false }
+        
         // Ensure pipeline is initialized
         if patternDiscoveryEngine == nil {
             initializeCompositionalPipeline(with: translationEngine)
@@ -132,8 +142,12 @@ class DataManager: ObservableObject {
         }
         
         // Only discover patterns if we have sufficient training data
-        guard examplesWithEmbeddings.count >= 2 else {
-            print("⚠️ Need at least 2 examples with embeddings for pattern discovery")
+        guard examplesWithEmbeddings.count >= 2 && examplesWithEmbeddings.count <= 20 else {
+            if examplesWithEmbeddings.count < 2 {
+                print("⚠️ Need at least 2 examples with embeddings for pattern discovery")
+            } else {
+                print("⚠️ Too many examples (\(examplesWithEmbeddings.count)), limiting pattern discovery")
+            }
             return
         }
         

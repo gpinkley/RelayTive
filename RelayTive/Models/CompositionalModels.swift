@@ -1,178 +1,311 @@
 //
-//  CompositionalModels.swift  
+//  CompositionalModels.swift
 //  RelayTive
-//
-//  Core data models for compositional pattern recognition system
 //
 
 import Foundation
 
-// MARK: - Audio Segment
+// ============================================================
+// MARK: - AudioSegment
+// ============================================================
 
-/// Represents a temporal segment of audio with its HuBERT embeddings
 struct AudioSegment: Identifiable, Codable {
-    let id = UUID()
-    let startTime: TimeInterval      // Start time in seconds within original audio
-    let endTime: TimeInterval        // End time in seconds within original audio  
-    let audioData: Data             // Raw audio data for this segment
-    let embeddings: [Float]         // HuBERT embeddings for this segment
-    let parentExampleId: UUID       // ID of the TrainingExample this segment came from
-    let confidence: Float           // Confidence in the segmentation quality (0.0-1.0)
-    
-    var duration: TimeInterval {
-        return endTime - startTime
+    let id: UUID
+    let startTime: TimeInterval
+    let endTime: TimeInterval
+    let audioData: Data
+    let embeddings: [Float]
+    let parentExampleId: UUID
+    let confidence: Float
+
+    var duration: TimeInterval { endTime - startTime }
+    var isValid: Bool { startTime < endTime && !embeddings.isEmpty && confidence > 0.1 }
+
+    // Creation init for new segments
+    init(startTime: TimeInterval,
+         endTime: TimeInterval,
+         audioData: Data,
+         embeddings: [Float],
+         parentExampleId: UUID,
+         confidence: Float = 1.0) {
+        self.id = UUID()
+        self.startTime = startTime
+        self.endTime = endTime
+        self.audioData = audioData
+        self.embeddings = embeddings
+        self.parentExampleId = parentExampleId
+        self.confidence = confidence
     }
-    
-    var isValid: Bool {
-        return startTime < endTime && !embeddings.isEmpty && confidence > 0.1
+
+    // Uniform immutable copier
+    func with(
+        startTime: TimeInterval? = nil,
+        endTime: TimeInterval? = nil,
+        audioData: Data? = nil,
+        embeddings: [Float]? = nil,
+        parentExampleId: UUID? = nil,
+        confidence: Float? = nil
+    ) -> AudioSegment {
+        AudioSegment(
+            id: id,
+            startTime: startTime ?? self.startTime,
+            endTime: endTime ?? self.endTime,
+            audioData: audioData ?? self.audioData,
+            embeddings: embeddings ?? self.embeddings,
+            parentExampleId: parentExampleId ?? self.parentExampleId,
+            confidence: confidence ?? self.confidence
+        )
+    }
+
+    // Private memberwise used by with(...)
+    private init(id: UUID,
+                 startTime: TimeInterval,
+                 endTime: TimeInterval,
+                 audioData: Data,
+                 embeddings: [Float],
+                 parentExampleId: UUID,
+                 confidence: Float) {
+        self.id = id
+        self.startTime = startTime
+        self.endTime = endTime
+        self.audioData = audioData
+        self.embeddings = embeddings
+        self.parentExampleId = parentExampleId
+        self.confidence = confidence
     }
 }
 
-// MARK: - Compositional Pattern
+// ============================================================
+// MARK: - CompositionalPattern
+// ============================================================
 
-/// Represents a discovered pattern that appears across multiple training examples
 struct CompositionalPattern: Identifiable, Codable {
-    let id = UUID()
-    let representativeEmbedding: [Float]    // Average embedding representing this pattern
-    let frequency: Int                      // How many times this pattern appears
-    let confidence: Float                   // Overall confidence in this pattern (0.0-1.0)
-    let averagePosition: Float              // Average position within utterances (0.0-1.0)
-    let associatedMeanings: [String]        // Meanings from examples containing this pattern
-    let contributingSegments: [UUID]        // IDs of AudioSegments that form this pattern
-    let createdAt: Date                     // When this pattern was discovered
-    let lastUpdated: Date                   // When this pattern was last reinforced
-    
-    init(representativeEmbedding: [Float], segments: [AudioSegment], associatedMeanings: [String]) {
+    let id: UUID
+    let representativeEmbedding: [Float]
+    let frequency: Int
+    let confidence: Float
+    let averagePosition: Float      // 0 start .. 1 end
+    let associatedMeanings: [String]
+    let contributingSegments: [UUID]
+    let createdAt: Date
+    let lastUpdated: Date
+
+    var isSignificant: Bool { confidence >= 0.5 && frequency >= 2 }
+
+    // Convenience init used by discovery
+    init(
+        representativeEmbedding: [Float],
+        segments: [AudioSegment],
+        associatedMeanings: [String],
+        confidence: Float,
+        createdAt: Date = Date()
+    ) {
+        self.id = UUID()
         self.representativeEmbedding = representativeEmbedding
         self.frequency = segments.count
-        self.confidence = min(1.0, Float(segments.count) * 0.1) // Base confidence on frequency
-        self.averagePosition = segments.map { Float($0.startTime) }.reduce(0, +) / Float(segments.count)
+        self.confidence = confidence
+        let posSum = segments.map { Float($0.startTime) }.reduce(0, +)
+        self.averagePosition = segments.isEmpty ? 0 : posSum / Float(segments.count)
         self.associatedMeanings = associatedMeanings
-        self.contributingSegments = segments.map { $0.id }
-        self.createdAt = Date()
-        self.lastUpdated = Date()
+        self.contributingSegments = segments.map(\.id)
+        self.createdAt = createdAt
+        self.lastUpdated = createdAt
     }
-    
-    var isSignificant: Bool {
-        return frequency >= 2 && confidence > 0.3
+
+    // Uniform immutable copier
+    func with(
+        representativeEmbedding: [Float]? = nil,
+        frequency: Int? = nil,
+        confidence: Float? = nil,
+        averagePosition: Float? = nil,
+        associatedMeanings: [String]? = nil,
+        contributingSegments: [UUID]? = nil,
+        lastUpdated: Date = Date()
+    ) -> CompositionalPattern {
+        CompositionalPattern(
+            id: id,
+            representativeEmbedding: representativeEmbedding ?? self.representativeEmbedding,
+            frequency: frequency ?? self.frequency,
+            confidence: confidence ?? self.confidence,
+            averagePosition: averagePosition ?? self.averagePosition,
+            associatedMeanings: associatedMeanings ?? self.associatedMeanings,
+            contributingSegments: contributingSegments ?? self.contributingSegments,
+            createdAt: createdAt,
+            lastUpdated: lastUpdated
+        )
+    }
+
+    // Ignore timestamps and tiny float jitter
+    func meaningfullyDiffers(from other: CompositionalPattern) -> Bool {
+        @inline(__always) func approx(_ a: Float, _ b: Float, tol: Float = 1e-4) -> Bool { abs(a - b) <= tol }
+        @inline(__always) func approxArray(_ a: [Float], _ b: [Float]) -> Bool {
+            guard a.count == b.count else { return false }
+            for i in 0..<a.count { if !approx(a[i], b[i]) { return true } }
+            return false
+        }
+        if id != other.id { return true }
+        if approxArray(representativeEmbedding, other.representativeEmbedding) { } else { return true }
+        if frequency != other.frequency { return true }
+        if !approx(confidence, other.confidence) { return true }
+        if !approx(averagePosition, other.averagePosition) { return true }
+        if associatedMeanings != other.associatedMeanings { return true }
+        if contributingSegments != other.contributingSegments { return true }
+        return false
+    }
+
+    // Private memberwise used by with(...)
+    private init(
+        id: UUID,
+        representativeEmbedding: [Float],
+        frequency: Int,
+        confidence: Float,
+        averagePosition: Float,
+        associatedMeanings: [String],
+        contributingSegments: [UUID],
+        createdAt: Date,
+        lastUpdated: Date
+    ) {
+        self.id = id
+        self.representativeEmbedding = representativeEmbedding
+        self.frequency = frequency
+        self.confidence = confidence
+        self.averagePosition = averagePosition
+        self.associatedMeanings = associatedMeanings
+        self.contributingSegments = contributingSegments
+        self.createdAt = createdAt
+        self.lastUpdated = lastUpdated
     }
 }
 
-// MARK: - Pattern Collection
+// ============================================================
+// MARK: - PatternMatchResult
+// ============================================================
 
-/// Collection of all discovered compositional patterns with management utilities
-struct PatternCollection: Codable {
-    private(set) var patterns: [CompositionalPattern] = []
-    private(set) var lastDiscoveryRun: Date?
-    
-    mutating func addPattern(_ pattern: CompositionalPattern) {
-        // Avoid duplicates based on embedding similarity
-        let isDuplicate = patterns.contains { existingPattern in
-            cosineSimilarity(pattern.representativeEmbedding, existingPattern.representativeEmbedding) > 0.95
-        }
-        
-        if !isDuplicate {
-            patterns.append(pattern)
-            patterns.sort { $0.confidence > $1.confidence } // Keep highest confidence first
-        }
-    }
-    
-    mutating func updatePattern(id: UUID, newSegments: [AudioSegment], newMeanings: [String]) {
-        if let index = patterns.firstIndex(where: { $0.id == id }) {
-            let existingPattern = patterns[index]
-            let updatedPattern = CompositionalPattern(
-                representativeEmbedding: existingPattern.representativeEmbedding,
-                segments: newSegments,
-                associatedMeanings: Array(Set(existingPattern.associatedMeanings + newMeanings))
-            )
-            patterns[index] = updatedPattern
-        }
-    }
-    
-    mutating func removeWeakPatterns() {
-        patterns.removeAll { !$0.isSignificant }
-    }
-    
-    mutating func markDiscoveryComplete() {
-        lastDiscoveryRun = Date()
-    }
-    
-    var significantPatterns: [CompositionalPattern] {
-        return patterns.filter { $0.isSignificant }
-    }
-    
-    func findSimilarPatterns(to embedding: [Float], threshold: Float = 0.7) -> [(pattern: CompositionalPattern, similarity: Float)] {
-        return patterns.compactMap { pattern in
-            let similarity = cosineSimilarity(embedding, pattern.representativeEmbedding)
-            return similarity > threshold ? (pattern, similarity) : nil
-        }.sorted { $0.similarity > $1.similarity }
-    }
+struct MatchedPatternInfo: Codable {
+    let pattern: CompositionalPattern
+    let confidence: Float
+    let position: TimeInterval
 }
 
-// MARK: - Pattern Match Result
-
-/// Result of matching audio against compositional patterns
-struct PatternMatchResult {
-    let matchedPatterns: [(pattern: CompositionalPattern, confidence: Float, position: TimeInterval)]
+struct PatternMatchResult: Codable {
+    let matchedPatterns: [MatchedPatternInfo]
     let overallConfidence: Float
     let reconstructedTranslation: String
     let explanation: String
     
-    var hasMatches: Bool {
-        return !matchedPatterns.isEmpty && overallConfidence > 0.5
-    }
+    var isSuccessful: Bool { overallConfidence > 0.0 }
+    var hasMatches: Bool { !matchedPatterns.isEmpty || overallConfidence > 0.0 }
 }
 
-// MARK: - Segmentation Strategy
+// ============================================================
+// MARK: - PatternCollection
+// ============================================================
 
-enum SegmentationStrategy {
-    case fixed(duration: TimeInterval)           // Fixed-length segments
-    case variable(minDuration: TimeInterval, maxDuration: TimeInterval)  // Variable-length segments
-    case adaptive                               // Adaptive based on audio features
-    
-    var defaultDuration: TimeInterval {
-        switch self {
-        case .fixed(let duration):
-            return duration
-        case .variable(let min, _):
-            return min
-        case .adaptive:
-            return 0.5 // Default for adaptive
+struct PatternCollection: Codable {
+    private(set) var patterns: [CompositionalPattern] = []
+    private(set) var lastDiscoveryRun: Date? = nil
+
+    var significantPatterns: [CompositionalPattern] {
+        patterns.filter { $0.isSignificant }
+    }
+
+    mutating func addPattern(_ p: CompositionalPattern) { upsert(p) }
+
+    mutating func upsert(_ p: CompositionalPattern) {
+        if let i = patterns.firstIndex(where: { $0.id == p.id }) {
+            patterns[i] = p
+        } else {
+            patterns.append(p)
         }
     }
+
+    mutating func updatePattern(id: UUID, newSegments: [AudioSegment], newMeanings: [String]) {
+        guard let idx = patterns.firstIndex(where: { $0.id == id }) else { return }
+        let cur = patterns[idx]
+
+        let mergedMeanings = Array(Set(cur.associatedMeanings + newMeanings)).sorted()
+        let mergedSegIds = cur.contributingSegments + newSegments.map(\.id)
+        let newFreq = cur.frequency + newSegments.count
+
+        // Running average of averagePosition using segment starts
+        let addedPosSum = newSegments.map { Float($0.startTime) }.reduce(0, +)
+        let oldWeighted = cur.averagePosition * Float(max(1, cur.frequency))
+        let newAvgPos = (oldWeighted + addedPosSum) / Float(max(1, newFreq))
+
+        // Simple confidence reinforcement
+        let newConf = min(1.0, cur.confidence + Float(newSegments.count) * 0.1)
+
+        let updated = cur.with(
+            frequency: newFreq,
+            confidence: newConf,
+            averagePosition: newAvgPos,
+            associatedMeanings: mergedMeanings,
+            contributingSegments: mergedSegIds,
+            lastUpdated: Date()
+        )
+
+        if updated.meaningfullyDiffers(from: cur) {
+            patterns[idx] = updated
+        }
+    }
+
+    mutating func removeWeakPatterns() {
+        patterns.removeAll { !$0.isSignificant }
+    }
+
+    mutating func markDiscoveryComplete() { lastDiscoveryRun = Date() }
+
+    func findSimilarPatterns(to embedding: [Float], threshold: Float = 0.7)
+      -> [(pattern: CompositionalPattern, similarity: Float)] {
+        patterns.compactMap { p in
+            let sim = cosineSimilarity(embedding, p.representativeEmbedding)
+            return sim > threshold ? (p, sim) : nil
+        }
+        .sorted { $0.similarity > $1.similarity }
+    }
 }
 
-// MARK: - Pattern Discovery Configuration  
+// ============================================================
+// MARK: - Discovery Config
+// ============================================================
 
-struct PatternDiscoveryConfig {
-    let minPatternFrequency: Int            // Minimum times pattern must appear
-    let minPatternConfidence: Float         // Minimum confidence threshold
-    let similarityThreshold: Float          // Embedding similarity threshold
-    let maxPatternsToDiscover: Int         // Limit on total patterns
+enum SegmentationStrategy: Codable {
+    case fixed(window: TimeInterval, overlap: Double)
+    case variable(minDuration: TimeInterval, maxDuration: TimeInterval, overlap: Double)
+    case adaptive
+}
+
+struct PatternDiscoveryConfig: Codable {
     let segmentationStrategy: SegmentationStrategy
-    
+    let similarityThreshold: Float
+    let minPatternFrequency: Int
+    let maxPatternsToDiscover: Int
+    let minPatternConfidence: Float
+
     static let `default` = PatternDiscoveryConfig(
+        segmentationStrategy: .adaptive,
+        similarityThreshold: 0.70,
         minPatternFrequency: 2,
-        minPatternConfidence: 0.3,
-        similarityThreshold: 0.75,
-        maxPatternsToDiscover: 100,
-        segmentationStrategy: .variable(minDuration: 0.2, maxDuration: 1.0)
+        maxPatternsToDiscover: 64,
+        minPatternConfidence: 0.45
     )
 }
 
-// MARK: - Utility Functions
+// ============================================================
+// MARK: - Utilities
+// ============================================================
 
-/// Calculate cosine similarity between two embedding vectors
+@inline(__always)
 func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
-    guard a.count == b.count && !a.isEmpty else { return 0.0 }
-    
-    let dotProduct = zip(a, b).map(*).reduce(0, +)
-    let magnitudeA = sqrt(a.map { $0 * $0 }.reduce(0, +))
-    let magnitudeB = sqrt(b.map { $0 * $0 }.reduce(0, +))
-    
-    guard magnitudeA > 0 && magnitudeB > 0 else { return 0.0 }
-    
-    return dotProduct / (magnitudeA * magnitudeB)
+    guard a.count == b.count, !a.isEmpty else { return 0 }
+    var dot: Float = 0, aa: Float = 0, bb: Float = 0
+    for i in 0..<a.count {
+        dot += a[i] * b[i]
+        aa += a[i] * a[i]
+        bb += b[i] * b[i]
+    }
+    let denom = sqrt(aa) * sqrt(bb)
+    return denom > 0 ? dot / denom : 0
 }
 
 /// Calculate average embedding from a collection of embeddings
@@ -182,16 +315,16 @@ func averageEmbedding(from embeddings: [[Float]]) -> [Float]? {
           embeddings.allSatisfy({ $0.count == firstEmbedding.count }) else {
         return nil
     }
-    
+
     let dimensionCount = firstEmbedding.count
     var averages = Array<Float>(repeating: 0.0, count: dimensionCount)
-    
+
     for embedding in embeddings {
         for (index, value) in embedding.enumerated() {
             averages[index] += value
         }
     }
-    
+
     let count = Float(embeddings.count)
     return averages.map { $0 / count }
 }

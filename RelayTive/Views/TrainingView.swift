@@ -83,7 +83,8 @@ struct TrainingView: View {
                     case .complete:
                         CompletedTrainingView(
                             explanationText: explanationText,
-                            onSave: {
+                            onSave: { editedText in
+                                explanationText = editedText
                                 saveTrainingExample()
                             },
                             onStartOver: {
@@ -444,9 +445,15 @@ struct RecordingExplanationView: View {
 }
 
 struct CompletedTrainingView: View {
-    let explanationText: String
-    let onSave: () -> Void
+    @State private var editableExplanationText: String
+    let onSave: (String) -> Void
     let onStartOver: () -> Void
+    
+    init(explanationText: String, onSave: @escaping (String) -> Void, onStartOver: @escaping () -> Void) {
+        self._editableExplanationText = State(initialValue: explanationText)
+        self.onSave = onSave
+        self.onStartOver = onStartOver
+    }
     
     var body: some View {
         VStack(spacing: 20) {
@@ -463,14 +470,19 @@ struct CompletedTrainingView: View {
                     .font(.subheadline)
                     .fontWeight(.medium)
                 
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(.systemGray6))
-                    .frame(minHeight: 60)
+                Text("Edit if needed before saving:")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextEditor(text: $editableExplanationText)
+                    .font(.body)
+                    .padding(8)
+                    .background(Color(.systemGray6))
+                    .cornerRadius(8)
+                    .frame(minHeight: 80)
                     .overlay(
-                        Text(explanationText)
-                            .font(.body)
-                            .padding()
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color(.systemGray4), lineWidth: 1)
                     )
             }
             
@@ -486,7 +498,7 @@ struct CompletedTrainingView: View {
                 }
                 .buttonStyle(PlainButtonStyle())
                 
-                Button(action: onSave) {
+                Button(action: { onSave(editableExplanationText) }) {
                     Text("Save Example")
                         .font(.body)
                         .fontWeight(.semibold)
@@ -500,6 +512,11 @@ struct CompletedTrainingView: View {
             }
         }
         .padding()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Dismiss keyboard when tapping outside
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
     }
 }
 
@@ -560,6 +577,11 @@ struct ExplanationInputView: View {
             }
         }
         .padding()
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // Dismiss keyboard when tapping outside
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+        }
     }
 }
 
@@ -590,6 +612,11 @@ struct ManualExplanationEntrySheet: View {
                 Spacer()
             }
             .padding()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // Dismiss keyboard when tapping outside
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
             .navigationTitle("Manual Entry")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

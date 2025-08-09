@@ -141,9 +141,10 @@ class CompositionalMatcher {
         
         let overallConfidence = min(1.0, bestWeight * coverage)
         let explanation = "Compositional match using meaning combination (coverage: \(Int(coverage * 100))%)"
+        let matchedPatternInfos = patternDetails.map { MatchedPatternInfo(pattern: $0.pattern, confidence: $0.confidence, position: $0.position) }
         
         return PatternMatchResult(
-            matchedPatterns: patternDetails,
+            matchedPatterns: matchedPatternInfos,
             overallConfidence: overallConfidence,
             reconstructedTranslation: bestMeaning,
             explanation: explanation
@@ -182,9 +183,10 @@ class CompositionalMatcher {
         
         let overallConfidence = min(1.0, bestWeight * coverage)
         let explanation = "Compositional match using frequency weighting (coverage: \(Int(coverage * 100))%)"
+        let matchedPatternInfos = patternDetails.map { MatchedPatternInfo(pattern: $0.pattern, confidence: $0.confidence, position: $0.position) }
         
         return PatternMatchResult(
-            matchedPatterns: patternDetails,
+            matchedPatterns: matchedPatternInfos,
             overallConfidence: overallConfidence,
             reconstructedTranslation: bestMeaning,
             explanation: explanation
@@ -217,8 +219,10 @@ class CompositionalMatcher {
             return nil
         }
         
+        let matchedPatternInfos = patternDetails.map { MatchedPatternInfo(pattern: $0.pattern, confidence: $0.confidence, position: $0.position) }
+        
         return PatternMatchResult(
-            matchedPatterns: patternDetails,
+            matchedPatterns: matchedPatternInfos,
             overallConfidence: overallConfidence,
             reconstructedTranslation: dominantMeaning,
             explanation: explanation
@@ -314,7 +318,7 @@ struct CompositionalMatchingConfig {
         minCoverageThreshold: 0.4,
         minCombinedConfidence: 0.5,
         fallbackSimilarityThreshold: 0.7,
-        segmentationStrategy: .variable(minDuration: 0.2, maxDuration: 1.0)
+        segmentationStrategy: .variable(minDuration: 0.2, maxDuration: 1.0, overlap: 0.1)
     )
     
     static let conservative = CompositionalMatchingConfig(
@@ -322,7 +326,7 @@ struct CompositionalMatchingConfig {
         minCoverageThreshold: 0.6,
         minCombinedConfidence: 0.7,
         fallbackSimilarityThreshold: 0.8,
-        segmentationStrategy: .variable(minDuration: 0.3, maxDuration: 0.8)
+        segmentationStrategy: .variable(minDuration: 0.3, maxDuration: 0.8, overlap: 0.2)
     )
     
     static let aggressive = CompositionalMatchingConfig(
@@ -330,7 +334,7 @@ struct CompositionalMatchingConfig {
         minCoverageThreshold: 0.3,
         minCombinedConfidence: 0.4,
         fallbackSimilarityThreshold: 0.6,
-        segmentationStrategy: .variable(minDuration: 0.1, maxDuration: 1.2)
+        segmentationStrategy: .variable(minDuration: 0.1, maxDuration: 1.2, overlap: 0.05)
     )
 }
 
@@ -357,7 +361,7 @@ extension CompositionalMatcher {
         )
     }
     
-    private func analyzeTemporalDistribution(_ matches: [(pattern: CompositionalPattern, confidence: Float, position: TimeInterval)]) -> String {
+    private func analyzeTemporalDistribution(_ matches: [MatchedPatternInfo]) -> String {
         guard !matches.isEmpty else { return "No matches" }
         
         let positions = matches.map { $0.position }
@@ -368,7 +372,7 @@ extension CompositionalMatcher {
         return span > 1.0 ? "Well distributed" : "Clustered"
     }
     
-    private func analyzeConfidenceDistribution(_ matches: [(pattern: CompositionalPattern, confidence: Float, position: TimeInterval)]) -> String {
+    private func analyzeConfidenceDistribution(_ matches: [MatchedPatternInfo]) -> String {
         guard !matches.isEmpty else { return "No matches" }
         
         let confidences = matches.map { $0.confidence }

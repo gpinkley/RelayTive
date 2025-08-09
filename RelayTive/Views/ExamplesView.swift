@@ -163,8 +163,6 @@ struct ExampleDetailView: View {
     @State private var editedUtterance: Utterance
     let onSave: (Utterance) -> Void
     @Environment(\.dismiss) private var dismiss
-    @State private var words: [WordSegment] = []
-    @State private var editingMode = false
     
     init(utterance: Utterance, onSave: @escaping (Utterance) -> Void) {
         self._editedUtterance = State(initialValue: utterance)
@@ -215,39 +213,6 @@ struct ExampleDetailView: View {
                         .foregroundColor(.secondary)
                 }
                 
-                // Word-level breakdown section
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack {
-                        Text("Word Breakdown")
-                            .font(.headline)
-                        
-                        Spacer()
-                        
-                        Button(editingMode ? "Done" : "Edit Words") {
-                            if editingMode {
-                                // Save word changes back to translation
-                                editedUtterance.translation = words.map(\.text).joined(separator: " ")
-                            } else {
-                                // Split current translation into words
-                                words = editedUtterance.translation
-                                    .split(separator: " ")
-                                    .map { WordSegment(text: String($0)) }
-                            }
-                            editingMode.toggle()
-                        }
-                        .font(.caption)
-                        .buttonStyle(.bordered)
-                    }
-                    
-                    if editingMode {
-                        WordEditingView(words: $words)
-                    } else {
-                        Text("Tap 'Edit Words' to break down into individual words for fine-grained editing")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .italic()
-                    }
-                }
                 
                 Spacer()
                 
@@ -268,6 +233,11 @@ struct ExampleDetailView: View {
                 .cornerRadius(10)
             }
             .padding()
+            .contentShape(Rectangle())
+            .onTapGesture {
+                // Dismiss keyboard when tapping outside
+                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+            }
             .navigationTitle("Edit Example")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -292,79 +262,6 @@ struct ExampleDetailView: View {
     }
 }
 
-struct WordSegment: Identifiable {
-    let id = UUID()
-    var text: String
-}
-
-struct WordEditingView: View {
-    @Binding var words: [WordSegment]
-    @State private var selectedWordIndex: Int?
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Tap words to edit, drag to reorder")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            
-            LazyVGrid(columns: [
-                GridItem(.adaptive(minimum: 80), spacing: 8)
-            ], spacing: 8) {
-                ForEach(Array(words.enumerated()), id: \.element.id) { index, word in
-                    WordChip(
-                        word: word.text,
-                        isSelected: selectedWordIndex == index
-                    ) {
-                        selectedWordIndex = index
-                    }
-                }
-            }
-            
-            if let selectedIndex = selectedWordIndex {
-                HStack {
-                    TextField("Edit word", text: $words[selectedIndex].text)
-                        .textFieldStyle(.roundedBorder)
-                    
-                    Button("Delete") {
-                        words.remove(at: selectedIndex)
-                        selectedWordIndex = nil
-                    }
-                    .font(.caption)
-                    .foregroundColor(.red)
-                }
-            }
-            
-            Button("Add Word") {
-                words.append(WordSegment(text: "new"))
-                selectedWordIndex = words.count - 1
-            }
-            .font(.caption)
-            .buttonStyle(.bordered)
-        }
-        .padding()
-        .background(Color(.systemGray6))
-        .cornerRadius(10)
-    }
-}
-
-struct WordChip: View {
-    let word: String
-    let isSelected: Bool
-    let onTap: () -> Void
-    
-    var body: some View {
-        Text(word)
-            .font(.body)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(isSelected ? Color.blue : Color(.systemGray5))
-            .foregroundColor(isSelected ? .white : .primary)
-            .cornerRadius(20)
-            .onTapGesture {
-                onTap()
-            }
-    }
-}
 
 #Preview {
     ExamplesView()
