@@ -20,6 +20,22 @@ class TranslationEngine: ObservableObject {
     private let audioEngine = AVAudioEngine()
     private let audioFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
     
+    // Cache to prevent identical embedding extractions - using hash keys to prevent memory leaks
+    private var embeddingCache: [String: [Float]] = [:] 
+    private let maxCacheSize = 20
+    
+    // Reused MLMultiArray buffer to prevent memory churn
+    private var reusableInputBuffer: MLMultiArray?
+    private let expectedInputSize = 480000
+    
+    // Debug diagnostics
+    #if DEBUG
+    var debugDiagnosticsEnabled = true
+    private(set) var lastEmbedding: [Float]? = nil
+    #else
+    var debugDiagnosticsEnabled = false
+    #endif
+    
     init() {
         loadHuBERTModel()
     }
@@ -103,90 +119,184 @@ class TranslationEngine: ObservableObject {
         return translation
     }
     
-    // Extract embeddings only (without translation lookup)
-    func extractEmbeddings(_ audioData: Data) async -> [Float]? {
+    // MARK: - Public Embedding Extraction API
+    
+    /// Extract embeddings from a file URL (for real recordings with headers)
+    func extractEmbeddings(fromFile url: URL) async -> [Float]? {
+        let fileHash = url.absoluteString
+        
+        // Check cache first
+        if let cachedEmbeddings = embeddingCache[fileHash] {
+            print("🎯 Using cached embeddings for file: \(url.lastPathComponent)")
+            return cachedEmbeddings
+        }
+        
         isProcessing = true
         defer { isProcessing = false }
         
         let startTime = CFAbsoluteTimeGetCurrent()
         
+        guard hubertModel != nil else {
+            print("HuBERT model not loaded")
+            return nil
+        }
+        
+        do {
+            let file = try AVAudioFile(forReading: url)
+            let frameCount = AVAudioFrameCount(file.length)
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frameCount) else {
+                print("Failed to create buffer for file")
+                return nil
+            }
+            try file.read(into: buffer)
+            
+            guard let embeddings = await extractEmbeddings(from: buffer) else {
+                return nil
+            }
+            
+            let endTime = CFAbsoluteTimeGetCurrent()
+            lastProcessingTime = endTime - startTime
+            
+            // Cache the result
+            embeddingCache[fileHash] = embeddings
+            
+            print("HuBERT file processing completed in \(String(format: "%.2f", lastProcessingTime)) seconds")
+            return embeddings
+        } catch {
+            print("Failed to read audio file: \(error)")
+            return nil
+        }
+    }
+    
+    /// Extract embeddings from a PCM buffer (for internal audio segments)
+    func extractEmbeddings(from buffer: AVAudioPCMBuffer) async -> [Float]? {
+        isProcessing = true
+        defer { isProcessing = false }
+        
         guard let model = hubertModel else {
             print("HuBERT model not loaded")
             return nil
         }
         
-        // Step 1: Convert audio data to the format expected by HuBERT
-        guard let audioArray = preprocessAudioForHuBERT(audioData) else {
-            print("Failed to preprocess audio for HuBERT")
+        // Use unified preprocessing function
+        guard let processedBuffer = preprocessAudioBuffer(buffer, targetSR: 16000) else {
+            print("Failed to preprocess audio buffer")
             return nil
         }
         
-        // Step 2: Extract HuBERT embeddings using CoreML
-        guard let embeddings = extractHuBERTEmbeddings(audioArray, using: model) else {
-            print("Failed to extract HuBERT embeddings")
-            return nil
+        // Extract embeddings directly from processed buffer
+        return extractHuBERTEmbeddings(from: processedBuffer, using: model)
+    }
+    
+    /// Legacy Data-based method - only for real files with headers
+    func extractEmbeddings(_ audioData: Data) async -> [Float]? {
+        // Check if this is a RIFF/WAVE file (real file with headers)
+        if audioData.count >= 12 &&
+           audioData[0] == 0x52 && audioData[1] == 0x49 && audioData[2] == 0x46 && audioData[3] == 0x46 && // "RIFF"
+           audioData[8] == 0x57 && audioData[9] == 0x41 && audioData[10] == 0x56 && audioData[11] == 0x45 {   // "WAVE"
+            // Use file-based method for WAV files
+            let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".wav")
+            do {
+                try audioData.write(to: tempURL)
+                defer { try? FileManager.default.removeItem(at: tempURL) }
+                return await extractEmbeddings(fromFile: tempURL)
+            } catch {
+                print("Failed to write temp WAV file: \(error)")
+                return nil
+            }
+        } else {
+            // Construct buffer and use buffer path (no temp WAV round-trip)
+            guard let buffer = createAudioBuffer(from: audioData) else {
+                print("Failed to create buffer from raw audio data")
+                return nil
+            }
+            return await extractEmbeddings(from: buffer)
         }
-        
-        let endTime = CFAbsoluteTimeGetCurrent()
-        lastProcessingTime = endTime - startTime
-        
-        print("HuBERT embedding extraction completed in \(String(format: "%.2f", lastProcessingTime)) seconds")
-        return embeddings
+    }
+    
+    /// Cache sanity test to detect collisions
+    private func checkCacheCollision(key: String, embeddings: [Float]) {
+        if debugDiagnosticsEnabled, let cached = embeddingCache[key] {
+            // Check if embeddings are suspiciously identical
+            let allSame = zip(embeddings, cached).allSatisfy { abs($0 - $1) < 1e-6 }
+            if allSame {
+                print("[Diag] suspect cache key collision for \(key)")
+            }
+        }
     }
     
     // MARK: - HuBERT Processing Pipeline
     
     private func performHuBERTInference(_ audioData: Data) async -> String? {
-        guard let model = hubertModel else {
-            print("HuBERT model not loaded")
+        // Use the unified Data-based extraction path
+        guard let embeddings = await extractEmbeddings(audioData) else {
             return nil
         }
-        
-        // Step 1: Convert audio data to the format expected by HuBERT
-        guard let audioArray = preprocessAudioForHuBERT(audioData) else {
-            print("Failed to preprocess audio for HuBERT")
-            return nil
-        }
-        
-        // Step 2: Extract HuBERT embeddings using CoreML
-        guard let embeddings = extractHuBERTEmbeddings(audioArray, using: model) else {
-            print("Failed to extract HuBERT embeddings")
-            return nil
-        }
-        
-        // Step 3: Map embeddings to meaningful translation
-        let translation = mapEmbeddingsToTranslation(embeddings)
-        
-        return translation
+        return mapEmbeddingsToTranslation(embeddings)
     }
-    
-    private func preprocessAudioForHuBERT(_ audioData: Data) -> [Float]? {
-        guard !audioData.isEmpty else {
-            print("Empty audio data")
-            return nil
-        }
-        
+
+
+    /// Single unified preprocessing function used by ALL callers
+    private func preprocessAudioBuffer(_ inputBuffer: AVAudioPCMBuffer, targetSR: Double = 16000) -> AVAudioPCMBuffer? {
         do {
-            // Convert Data to AVAudioPCMBuffer
-            guard let audioBuffer = createAudioBuffer(from: audioData) else {
-                print("Failed to create audio buffer")
+            // Step 1: Resample to target sample rate mono if needed
+            let targetFormat = AVAudioFormat(standardFormatWithSampleRate: targetSR, channels: 1)!
+            let resampledBuffer: AVAudioPCMBuffer
+            
+            if inputBuffer.format.sampleRate == targetSR && inputBuffer.format.channelCount == 1 {
+                resampledBuffer = inputBuffer
+            } else {
+                resampledBuffer = try resampleAudio(buffer: inputBuffer, targetSampleRate: targetSR)
+            }
+            
+            let inputSamples = Int(resampledBuffer.frameLength)
+            let expectedSamples = 480000
+            
+            // Step 2: Create output buffer with exactly 480k samples
+            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(expectedSamples)) else {
+                print("Failed to create output buffer")
                 return nil
             }
             
-            // Resample to 16kHz if needed (HuBERT expects 16kHz)
-            let resampledBuffer = try resampleAudio(buffer: audioBuffer, targetSampleRate: 16000)
+            outputBuffer.frameLength = AVAudioFrameCount(expectedSamples)
             
-            // Convert to Float array and normalize
-            guard let floatArray = convertBufferToFloatArray(resampledBuffer) else {
-                print("Failed to convert buffer to float array")
+            guard let inputPtr = resampledBuffer.floatChannelData?[0],
+                  let outputPtr = outputBuffer.floatChannelData?[0] else {
+                print("Failed to get channel data")
                 return nil
             }
             
-            // Normalize audio to [-1, 1] range
-            let normalizedArray = normalizeAudio(floatArray)
+            // Step 3: Normalize to [-1, 1] range
+            var maxValue: Float = 0
+            for i in 0..<inputSamples {
+                maxValue = max(maxValue, abs(inputPtr[i]))
+            }
+            let normalizationFactor = maxValue > 1e-6 ? 1.0 / maxValue : 1.0
             
-            print("Preprocessed audio: \(normalizedArray.count) samples at 16kHz")
-            return normalizedArray
+            // Step 4: Copy normalized samples and zero-pad tail to 480k
+            let copyCount = min(inputSamples, expectedSamples)
+            for i in 0..<copyCount {
+                outputPtr[i] = inputPtr[i] * normalizationFactor
+            }
+            
+            // Zero-pad the rest (ALWAYS pad, never repeat, never reject)
+            if copyCount < expectedSamples {
+                for i in copyCount..<expectedSamples {
+                    outputPtr[i] = 0.0
+                }
+            }
+            
+            // Unified logging
+            let padCount = max(0, expectedSamples - inputSamples)
+            print("Preprocessed audio: \(inputSamples) samples at 16kHz")
+            if padCount > 0 {
+                print("Audio padded from \(inputSamples) to \(expectedSamples) samples")
+            }
+            
+            // Call diagnostics after preprocessing
+            diag(outputBuffer, paddedFrom: inputSamples)
+            
+            return outputBuffer
             
         } catch {
             print("Audio preprocessing error: \(error)")
@@ -194,30 +304,115 @@ class TranslationEngine: ObservableObject {
         }
     }
     
-    private func extractHuBERTEmbeddings(_ audioArray: [Float], using model: MLModel) -> [Float]? {
+    /// Buffer analysis for diagnostics
+    private func analyzeBuffer(_ buffer: AVAudioPCMBuffer) -> (frames: Int, rms: Float, peak: Float, zeroRatio: Float) {
+        guard let channelData = buffer.floatChannelData?[0] else {
+            return (0, 0, 0, 1.0)
+        }
+        
+        let frameCount = Int(buffer.frameLength)
+        var sumSquares: Float = 0
+        var peak: Float = 0
+        var zeroCount = 0
+        
+        for i in 0..<frameCount {
+            let sample = channelData[i]
+            sumSquares += sample * sample
+            peak = max(peak, abs(sample))
+            if sample == 0.0 { zeroCount += 1 }
+        }
+        
+        let rms = frameCount > 0 ? sqrt(sumSquares / Float(frameCount)) : 0
+        let zeroRatio = frameCount > 0 ? Float(zeroCount) / Float(frameCount) : 0
+        
+        return (frameCount, rms, peak, zeroRatio)
+    }
+    
+    private func diag(_ buf: AVAudioPCMBuffer, paddedFrom originalFrames: Int) {
+        #if DEBUG
+        guard let ch = buf.floatChannelData?[0] else { return }
+        let n = Int(buf.frameLength)
+        var sum: Float = 0
+        var zeros = 0
+        for i in 0..<n { let v = ch[i]; sum += v*v; if v == 0 { zeros += 1 } }
+        let rms = n > 0 ? sqrt(sum / Float(n)) : 0
+        let pad = max(0, n - originalFrames)
+        print("[Diag] frames=\(n) rms=\(rms) pad=\(pad) zeros=\(zeros)")
+        #endif
+    }
+    
+    /// Detect degenerate embedding patterns for diagnostics
+    private func detectEmbeddingDegeneracy(_ embeddings: [Float]) -> [String] {
+        var flags: [String] = []
+        
+        guard !embeddings.isEmpty else {
+            flags.append("empty")
+            return flags
+        }
+        
+        // Check for all zeros
+        let allZeros = embeddings.allSatisfy { $0 == 0.0 }
+        if allZeros {
+            flags.append("zeros")
+            return flags
+        }
+        
+        // Check for NaN or infinite values
+        let hasNaN = embeddings.contains { !$0.isFinite }
+        if hasNaN {
+            flags.append("nan_inf")
+        }
+        
+        // Check for very low norm (near zero)
+        let norm = sqrt(embeddings.map { $0 * $0 }.reduce(0, +))
+        if norm < 1e-6 {
+            flags.append("low_norm")
+        }
+        
+        // Check for constant values
+        let first = embeddings[0]
+        let allSame = embeddings.allSatisfy { abs($0 - first) < 1e-6 }
+        if allSame {
+            flags.append("constant")
+        }
+        
+        // Check for very high norm (potential overflow)
+        if norm > 1e6 {
+            flags.append("high_norm")
+        }
+        
+        return flags
+    }
+    
+    /// Extract HuBERT embeddings from preprocessed 16kHz buffer (should be exactly 480k samples)
+    private func extractHuBERTEmbeddings(from buffer: AVAudioPCMBuffer, using model: MLModel) -> [Float]? {
         do {
-            // HuBERT model expects fixed input size: 480000 samples (30 seconds at 16kHz)
             let expectedInputSize = 480000
-            let processedAudio: [Float]
+            let frameCount = Int(buffer.frameLength)
             
-            if audioArray.count > expectedInputSize {
-                // Truncate if too long
-                processedAudio = Array(audioArray.prefix(expectedInputSize))
-                print("Audio truncated from \(audioArray.count) to \(expectedInputSize) samples")
-            } else if audioArray.count < expectedInputSize {
-                // Pad with zeros if too short
-                processedAudio = audioArray + Array(repeating: 0.0, count: expectedInputSize - audioArray.count)
-                print("Audio padded from \(audioArray.count) to \(expectedInputSize) samples")
-            } else {
-                // Perfect size
-                processedAudio = audioArray
+            guard frameCount == expectedInputSize else {
+                print("❌ Buffer has \(frameCount) samples, expected \(expectedInputSize)")
+                return nil
             }
             
-            // Create MLMultiArray with the correct fixed size
-            let inputArray = try MLMultiArray(shape: [1, NSNumber(value: expectedInputSize)], dataType: .float32)
+            guard let audioPtr = buffer.floatChannelData?[0] else {
+                print("❌ Failed to get audio channel data")
+                return nil
+            }
             
-            for (index, value) in processedAudio.enumerated() {
-                inputArray[index] = NSNumber(value: value)
+            // Reuse or create MLMultiArray buffer
+            if reusableInputBuffer == nil {
+                reusableInputBuffer = try MLMultiArray(shape: [1, NSNumber(value: expectedInputSize)], dataType: .float32)
+            }
+            
+            guard let inputArray = reusableInputBuffer else {
+                print("Failed to get reusable buffer")
+                return nil
+            }
+            
+            // Copy audio data directly to MLMultiArray (no intermediate float array)
+            for index in 0..<expectedInputSize {
+                inputArray[index] = NSNumber(value: audioPtr[index])
             }
             
             // Create the input dictionary using the correct key from model description
@@ -233,7 +428,21 @@ class TranslationEngine: ObservableObject {
                 }
                 
                 print("✅ Successfully extracted HuBERT embeddings: \(embeddings.count) dimensions")
-                print("Embedding sample (first 5 values): \(Array(embeddings.prefix(5)))")
+                
+                // Diagnostics for embeddings
+                #if DEBUG
+                let embNorm = sqrt(embeddings.map { $0 * $0 }.reduce(0, +))
+                var dPrev: Float = -1
+                
+                if let lastEmb = lastEmbedding, lastEmb.count == embeddings.count {
+                    let diff = zip(embeddings, lastEmb).map { $0 - $1 }
+                    dPrev = sqrt(diff.map { $0 * $0 }.reduce(0, +))
+                }
+                
+                print("[Diag] embNorm=\(String(format: "%.3f", embNorm)) dPrev=\(dPrev >= 0 ? String(format: "%.3f", dPrev) : "n/a")")
+                lastEmbedding = embeddings
+                #endif
+                
                 return embeddings
             } else {
                 print("❌ No embeddings found in model output")
@@ -284,37 +493,40 @@ class TranslationEngine: ObservableObject {
         }
         
         Task {
-            // Create dummy audio data (1 second of silence at 16kHz)
-            let dummyAudioSamples = Array(repeating: Float(0.0), count: 16000)
-            let dummyAudioData = Data(bytes: dummyAudioSamples, count: dummyAudioSamples.count * MemoryLayout<Float>.size)
-            
-            print("Warming up HuBERT model with dummy audio...")
-            _ = await translateAudio(dummyAudioData)
-            print("HuBERT model warmed up successfully")
+            let fmt = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
+            let buf = AVAudioPCMBuffer(pcmFormat: fmt, frameCapacity: 16000)!
+            buf.frameLength = 16000
+            memset(buf.floatChannelData![0], 0, Int(buf.frameLength) * MemoryLayout<Float>.size)
+            _ = await extractEmbeddings(from: buf)
         }
     }
     
     // MARK: - Audio Processing Helpers
     
+    // This method is now deprecated - use buffer-based methods instead
+    // Kept for backward compatibility only
     private func createAudioBuffer(from audioData: Data) -> AVAudioPCMBuffer? {
-        // Convert WAV data to AVAudioPCMBuffer
-        // Note: This assumes the recorded audio is in the correct format
-        // You might need to adjust this based on your AudioManager's output format
+        print("⚠️ Using deprecated createAudioBuffer - prefer buffer-based methods")
         
-        let bytesPerSample = 2 // 16-bit audio
-        let sampleCount = audioData.count / bytesPerSample
+        // Treat as headerless PCM (44.1kHz, 16-bit mono) from AVAudioRecorder
+        let frameCount = audioData.count / 2 // 2 bytes per 16-bit sample
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
         
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(sampleCount)) else {
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            print("❌ Failed to create PCM buffer for raw audio")
             return nil
         }
         
-        buffer.frameLength = AVAudioFrameCount(sampleCount)
+        buffer.frameLength = AVAudioFrameCount(frameCount)
         
-        // Copy audio data to buffer
+        // Copy raw PCM data to buffer
         audioData.withUnsafeBytes { bytes in
-            let int16Pointer = bytes.bindMemory(to: Int16.self)
-            if let channelData = buffer.int16ChannelData {
-                channelData[0].update(from: int16Pointer.baseAddress!, count: sampleCount)
+            let int16Ptr = bytes.bindMemory(to: Int16.self)
+            let floatPtr = buffer.floatChannelData![0]
+            
+            // Convert Int16 to Float (normalization happens in preprocessing)
+            for i in 0..<frameCount {
+                floatPtr[i] = Float(int16Ptr[i]) / 32768.0
             }
         }
         
@@ -340,7 +552,14 @@ class TranslationEngine: ObservableObject {
         }
         
         var error: NSError?
-        let status = converter.convert(to: outputBuffer, error: &error) { _, _ in
+        var inputConsumed = false
+        let status = converter.convert(to: outputBuffer, error: &error) { _, outStatus in
+            if inputConsumed {
+                outStatus.pointee = .endOfStream
+                return nil
+            }
+            inputConsumed = true
+            outStatus.pointee = .haveData
             return buffer
         }
         
@@ -371,5 +590,24 @@ class TranslationEngine: ObservableObject {
         
         // Normalize to [-1, 1] range
         return audioArray.map { $0 / maxValue }
+    }
+    
+    // MARK: - Embedding Cache Management
+    
+    private func manageCache(audioHash: String, embeddings: [Float]) {
+        // Cache sanity check
+        checkCacheCollision(key: audioHash, embeddings: embeddings)
+        
+        embeddingCache[audioHash] = embeddings
+        
+        // Limit cache size to prevent memory bloat
+        if embeddingCache.count > maxCacheSize {
+            // Remove oldest entries - hash keys are more memory-efficient
+            let keysToRemove = Array(embeddingCache.keys.prefix(5))
+            for key in keysToRemove {
+                embeddingCache.removeValue(forKey: key)
+            }
+            print("🧹 Embedding cache cleaned, now has \(embeddingCache.count) entries")
+        }
     }
 }

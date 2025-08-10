@@ -13,7 +13,7 @@ struct AudioSegment: Identifiable, Codable {
     let id: UUID
     let startTime: TimeInterval
     let endTime: TimeInterval
-    let audioData: Data
+    let audioData: Data?
     let embeddings: [Float]
     let parentExampleId: UUID
     let confidence: Float
@@ -24,7 +24,7 @@ struct AudioSegment: Identifiable, Codable {
     // Creation init for new segments
     init(startTime: TimeInterval,
          endTime: TimeInterval,
-         audioData: Data,
+         audioData: Data? = nil,
          embeddings: [Float],
          parentExampleId: UUID,
          confidence: Float = 1.0) {
@@ -46,7 +46,7 @@ struct AudioSegment: Identifiable, Codable {
         parentExampleId: UUID? = nil,
         confidence: Float? = nil
     ) -> AudioSegment {
-        AudioSegment(
+        return AudioSegment(
             id: id,
             startTime: startTime ?? self.startTime,
             endTime: endTime ?? self.endTime,
@@ -61,7 +61,7 @@ struct AudioSegment: Identifiable, Codable {
     private init(id: UUID,
                  startTime: TimeInterval,
                  endTime: TimeInterval,
-                 audioData: Data,
+                 audioData: Data?,
                  embeddings: [Float],
                  parentExampleId: UUID,
                  confidence: Float) {
@@ -327,12 +327,13 @@ struct PatternDiscoveryConfig: Codable {
     let meaningConsistencyThreshold: Float
 
     static let `default` = PatternDiscoveryConfig(
-        segmentationStrategy: .embeddingBased(minDuration: 0.25, maxDuration: 1.5, similarityThreshold: 0.72),
-        similarityThreshold: 0.70,
-        minPatternFrequency: 2,
-        maxPatternsToDiscover: 16, // Reduce from 64 to save memory
-        minPatternConfidence: 0.45,
-        meaningConsistencyThreshold: 0.70
+        segmentationStrategy: .embeddingBased(minDuration: 0.2, maxDuration: 2.0, similarityThreshold: 0.6),
+        // Relaxed config for testing - easier discovery with limited data
+        similarityThreshold: 0.5,
+        minPatternFrequency: 1,
+        maxPatternsToDiscover: 20,
+        minPatternConfidence: 0.25,
+        meaningConsistencyThreshold: 0.6
     )
 }
 
@@ -350,7 +351,21 @@ func cosineSimilarity(_ a: [Float], _ b: [Float]) -> Float {
         bb += b[i] * b[i]
     }
     let denom = sqrt(aa) * sqrt(bb)
-    return denom > 0 ? dot / denom : 0
+    let result = denom > 1e-6 ? dot / denom : 0
+    return result.isFinite ? result : 0
+}
+
+// NaN safety utilities
+extension CGFloat {
+    var finiteOrZero: CGFloat {
+        isFinite ? self : 0
+    }
+}
+
+@inline(__always)
+func safeDiv(_ a: CGFloat, _ b: CGFloat) -> CGFloat {
+    let result = a / max(b, 1e-6)
+    return result.finiteOrZero
 }
 
 /// Calculate average embedding from a collection of embeddings

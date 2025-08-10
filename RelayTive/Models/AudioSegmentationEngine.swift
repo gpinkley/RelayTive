@@ -9,16 +9,28 @@ import Foundation
 import AVFoundation
 import Accelerate
 
+/// Diagnostic information for segment processing
+struct SegmentDiag: Codable {
+    let idx: Int
+    let start: TimeInterval
+    let end: TimeInterval
+    let frames: Int
+    let rms: Float
+    let pad: Int
+    let success: Bool
+    let reason: String
+}
+
 /// Engine responsible for segmenting audio and extracting embeddings for each segment
 class AudioSegmentationEngine {
     
     // MARK: - Tuning Constants
     struct SegmentationTuning {
-        static let minDuration: TimeInterval = 0.4  // Increase to reduce segment count
-        static let maxDuration: TimeInterval = 1.2  // Decrease to reduce segment count
-        static let frameDuration: TimeInterval = 0.075  // Increase to reduce frame count
-        static let stepDuration: TimeInterval = 0.050   // Increase to reduce frame count
-        static let similarityThreshold: Float = 0.75    // Increase to be more selective
+        static let minDuration: TimeInterval = 0.5   // Minimum viable segment
+        static let maxDuration: TimeInterval = 2.0   // Allow longer segments to get meaningful audio
+        static let frameDuration: TimeInterval = 0.5  // Much longer frames for meaningful content
+        static let stepDuration: TimeInterval = 0.25  // Less overlap
+        static let similarityThreshold: Float = 0.8   // More selective
     }
     private let translationEngine: TranslationEngine
     private let audioFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
@@ -31,7 +43,7 @@ class AudioSegmentationEngine {
     
     /// Extract temporal segments from a training example and compute their embeddings
     func extractSegments(from trainingExample: TrainingExample, 
-                        strategy: SegmentationStrategy = .embeddingBased(minDuration: SegmentationTuning.minDuration, maxDuration: SegmentationTuning.maxDuration, similarityThreshold: SegmentationTuning.similarityThreshold)) async -> [AudioSegment] {
+                        strategy: SegmentationStrategy = .fixed(window: 2.0, overlap: 0.0)) async -> [AudioSegment] {
         
         print("🔍 Extracting segments from training example: \(trainingExample.typicalExplanation)")
         
@@ -45,35 +57,100 @@ class AudioSegmentationEngine {
         let segmentRanges = await determineSegmentRanges(audioBuffer: audioBuffer, strategy: strategy)
         print("📊 Found \(segmentRanges.count) potential segments")
         
-        // Extract segments and compute embeddings
+        // Extract segments and compute embeddings - ALWAYS produce embeddings via zero-padding
         var segments: [AudioSegment] = []
+        var diagnostics: [SegmentDiag] = []
         
         for (index, range) in segmentRanges.enumerated() {
             print("⏱️ Processing segment \(index + 1)/\(segmentRanges.count): \(range.startTime)s-\(range.endTime)s")
             
-            if let segmentAudio = extractAudioSegment(from: audioBuffer, range: range),
-               let segmentData = audioBufferToData(segmentAudio),
-               let embeddings = await extractEmbeddingsForSegment(segmentData) {
+            var segmentDiag = SegmentDiag(
+                idx: index + 1,
+                start: range.startTime,
+                end: range.endTime,
+                frames: 0,
+                rms: 0,
+                pad: 0,
+                success: false,
+                reason: "unknown"
+            )
+
+            if let segmentAudio = extractAudioSegment(from: audioBuffer, range: range) {
+                // Calculate buffer diagnostics
+                let frameCount = Int(segmentAudio.frameLength)
+                let bufferAnalysis = analyzeAudioBuffer(segmentAudio)
                 
-                let confidence = calculateSegmentConfidence(audioBuffer: segmentAudio, range: range)
-                
-                let segment = AudioSegment(
-                    startTime: range.startTime,
-                    endTime: range.endTime,
-                    audioData: segmentData,
-                    embeddings: embeddings,
-                    parentExampleId: trainingExample.id,
-                    confidence: confidence
-                )
-                
-                segments.append(segment)
-                print("✅ Created segment with \(embeddings.count) embedding dimensions, confidence: \(confidence)")
+                // ALWAYS extract embeddings - unified preprocessing handles zero-padding
+                if let embeddings = await translationEngine.extractEmbeddings(from: segmentAudio) {
+                    // Successful segment creation
+                    autoreleasepool {
+                        let confidence = calculateSegmentConfidence(audioBuffer: segmentAudio, range: range)
+
+                        #if DEBUG
+                        let segmentData = audioBufferToData(segmentAudio)
+                        #else
+                        let segmentData: Data? = nil
+                        #endif
+
+                        let segment = AudioSegment(
+                            startTime: range.startTime,
+                            endTime: range.endTime,
+                            audioData: segmentData,
+                            embeddings: embeddings,
+                            parentExampleId: trainingExample.id,
+                            confidence: confidence
+                        )
+                        segments.append(segment)
+                    }
+                    
+                    segmentDiag = SegmentDiag(
+                        idx: index + 1,
+                        start: range.startTime,
+                        end: range.endTime,
+                        frames: frameCount,
+                        rms: bufferAnalysis.rms,
+                        pad: bufferAnalysis.padCount,
+                        success: true,
+                        reason: "ok"
+                    )
+                    
+                    print("✅ Created segment with \(embeddings.count) embedding dimensions")
+                } else {
+                    segmentDiag = SegmentDiag(
+                        idx: index + 1,
+                        start: range.startTime,
+                        end: range.endTime,
+                        frames: frameCount,
+                        rms: bufferAnalysis.rms,
+                        pad: bufferAnalysis.padCount,
+                        success: false,
+                        reason: "embedding_failed"
+                    )
+                    print("⚠️ Segment \(index + 1) embedding extraction failed but continuing")
+                }
             } else {
-                print("❌ Failed to process segment \(index + 1)")
+                segmentDiag = SegmentDiag(
+                    idx: index + 1,
+                    start: range.startTime,
+                    end: range.endTime,
+                    frames: 0,
+                    rms: 0,
+                    pad: 0,
+                    success: false,
+                    reason: "buffer_extraction_failed"
+                )
+                print("⚠️ Segment \(index + 1) buffer extraction failed but continuing")
             }
+            
+            diagnostics.append(segmentDiag)
         }
         
-        print("🎯 Successfully extracted \(segments.count) valid segments")
+        // Write diagnostics JSON report
+        writeDiagnosticsReport(diagnostics: diagnostics, trainingExample: trainingExample)
+       
+        let successfulSegments = diagnostics.filter { $0.success }.count
+        let totalSegments = diagnostics.count
+        print("🎯 Processed \(totalSegments) segments: \(successfulSegments) successful, \(segments.count) valid")
         
         #if DEBUG
         analyzeSegmentationQuality(segments)
@@ -82,26 +159,41 @@ class AudioSegmentationEngine {
         return segments.filter { $0.isValid }
     }
     
+    // MARK: - Public Embedding Extraction
+    
+    /// Extract embeddings from raw audio data (exposed for CompositionalMatcher fallback)
+    func extractEmbeddings(from audioData: Data) async -> [Float]? {
+        return await translationEngine.extractEmbeddings(audioData)
+    }
+    
+    /// Extract embeddings from audio buffer (preferred method)
+    func extractEmbeddings(from buffer: AVAudioPCMBuffer) async -> [Float]? {
+        return await translationEngine.extractEmbeddings(from: buffer)
+    }
+    
     // MARK: - Audio Processing
     
+    // Deprecated - prefer extractEmbeddings(from: AVAudioPCMBuffer) for internal segments
     private func createAudioBuffer(from audioData: Data) -> AVAudioPCMBuffer? {
-        // Convert raw audio data to AVAudioPCMBuffer
-        // Assume input is 16kHz, 16-bit mono PCM
-        let frameCount = audioData.count / 2 // 2 bytes per 16-bit sample
+        print("⚠️ Using deprecated createAudioBuffer in AudioSegmentationEngine")
         
-        guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFormat, frameCapacity: AVAudioFrameCount(frameCount)) else {
-            print("Failed to create PCM buffer")
+        // Treat as headerless PCM (44.1kHz, 16-bit mono) from AVAudioRecorder
+        let frameCount = audioData.count / 2 // 2 bytes per 16-bit sample
+        let format = AVAudioFormat(standardFormatWithSampleRate: 44100, channels: 1)!
+        
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            print("❌ Failed to create PCM buffer for raw audio")
             return nil
         }
         
         buffer.frameLength = AVAudioFrameCount(frameCount)
         
-        // Copy audio data to buffer
+        // Copy raw PCM data to buffer
         audioData.withUnsafeBytes { bytes in
             let int16Ptr = bytes.bindMemory(to: Int16.self)
             let floatPtr = buffer.floatChannelData![0]
             
-            // Convert Int16 to Float and normalize to [-1.0, 1.0]
+            // Convert Int16 to Float (normalization happens in preprocessing)
             for i in 0..<frameCount {
                 floatPtr[i] = Float(int16Ptr[i]) / 32768.0
             }
@@ -297,6 +389,7 @@ class AudioSegmentationEngine {
     
     // MARK: - Embedding Extraction
     
+    // Deprecated - use buffer-based extraction instead
     private func extractEmbeddingsForSegment(_ audioData: Data) async -> [Float]? {
         return await translationEngine.extractEmbeddings(audioData)
     }
@@ -336,32 +429,28 @@ class AudioSegmentationEngine {
         
         var embeddings: [[Float]] = []
         var currentTime: TimeInterval = 0
-        
-        #if DEBUG
         var totalFrames = 0
-        #endif
         
         while currentTime + frameDuration <= totalDuration {
             let endTime = min(currentTime + frameDuration, totalDuration)
+            totalFrames += 1
             
             if let frameBuffer = extractAudioSegment(from: audioBuffer, 
-                                                   range: SegmentRange(startTime: currentTime, endTime: endTime)),
-               let frameData = audioBufferToData(frameBuffer),
-               let embedding = await translationEngine.extractEmbeddings(frameData) {
-                embeddings.append(embedding)
+                                                   range: SegmentRange(startTime: currentTime, endTime: endTime)) {
+                // ALWAYS extract embeddings - unified preprocessing handles zero-padding
+                if let embedding = await translationEngine.extractEmbeddings(from: frameBuffer) {
+                    embeddings.append(embedding)
+                } else {
+                    print("❌ Frame \(totalFrames) embedding extraction failed but continuing")
+                }
+            } else {
+                print("❌ Frame \(totalFrames) segment extraction failed but continuing")
             }
-            
-            #if DEBUG
-            totalFrames += 1
-            #endif
             
             currentTime += stepDuration
         }
         
-        #if DEBUG
-        print("🔍 Extracted embeddings for \(embeddings.count)/\(totalFrames) frames")
-        #endif
-        
+        print("Extracted embeddings for \(embeddings.count)/\(totalFrames) frames")
         return embeddings
     }
     
@@ -447,6 +536,55 @@ class AudioSegmentationEngine {
         print("   • Total segments: \(segments.count)")
         print("   • Duration stats: avg=\(String(format: "%.3f", avgDuration))s, min=\(String(format: "%.3f", minDuration))s, max=\(String(format: "%.3f", maxDuration))s, std=\(String(format: "%.3f", stdDev))s")
         print("   • Target range: 0.4-0.9s, actual in range: \(durations.filter { $0 >= 0.4 && $0 <= 0.9 }.count)/\(durations.count)")
+    }
+    
+    /// Analyze audio buffer for diagnostics (no padding detection - that's in TranslationEngine)
+    private func analyzeAudioBuffer(_ buffer: AVAudioPCMBuffer) -> (rms: Float, padCount: Int) {
+        guard let channelData = buffer.floatChannelData?[0] else {
+            return (0, 0)
+        }
+        
+        let frameCount = Int(buffer.frameLength)
+        var sumSquares: Float = 0
+        
+        for i in 0..<frameCount {
+            let sample = channelData[i]
+            sumSquares += sample * sample
+        }
+        
+        let rms = frameCount > 0 ? sqrt(sumSquares / Float(frameCount)) : 0
+        
+        // Remove padding guesswork - actual padding is computed in TranslationEngine
+        return (rms, 0)
+    }
+    
+    private struct SegReport: Codable {
+        let exampleId: String
+        let explanation: String
+        let timestamp: String
+        let segments: [SegmentDiag]
+    }
+    
+    /// Write segment diagnostics to JSON file for debugging
+    private func writeDiagnosticsReport(diagnostics: [SegmentDiag], trainingExample: TrainingExample) {
+        #if DEBUG
+        do {
+            let report = SegReport(
+                exampleId: trainingExample.id.uuidString,
+                explanation: trainingExample.typicalExplanation,
+                timestamp: ISO8601DateFormatter().string(from: Date()),
+                segments: diagnostics
+            )
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try enc.encode(report)
+            let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            try data.write(to: docs.appendingPathComponent("segmentation_diag_\(trainingExample.id.uuidString.prefix(8)).json"))
+            print("📄 Diagnostics report written")
+        } catch {
+            print("⚠️ Failed to write diagnostics report: \(error)")
+        }
+        #endif
     }
 }
 
