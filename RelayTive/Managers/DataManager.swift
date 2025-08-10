@@ -24,6 +24,8 @@ class DataManager: ObservableObject {
     private var compositionalMatcher: CompositionalMatcher?
     private var isProcessingPatterns = false // Prevent concurrent pattern discovery
     private var patternDiscoveryEnabled = true // Can be disabled for memory efficiency
+    private var pendingDiscoveryTask: Task<Void, Never>? // Debounce task
+    private var newExampleCount = 0 // Track new examples for triggering discovery
     
     init() {
         loadTrainingExamples()
@@ -128,6 +130,31 @@ class DataManager: ObservableObject {
     }
     
     // MARK: - Compositional Pattern Management
+    
+    /// Trigger debounced pattern discovery
+    func triggerPatternDiscovery(using translationEngine: TranslationEngine) {
+        // Cancel any pending discovery task
+        pendingDiscoveryTask?.cancel()
+        
+        // Only trigger every 2 new examples to reduce churn
+        newExampleCount += 1
+        guard newExampleCount >= 2 else {
+            print("🔍 Pattern discovery delayed until \(2 - newExampleCount) more examples added")
+            return
+        }
+        
+        // Debounce with 1 second delay
+        pendingDiscoveryTask = Task {
+            try? await Task.sleep(nanoseconds: 1_000_000_000) // 1 second
+            
+            guard !Task.isCancelled else { return }
+            
+            await performCompositionalPatternDiscovery(using: translationEngine)
+            await MainActor.run {
+                newExampleCount = 0 // Reset counter after discovery
+            }
+        }
+    }
     
     /// Perform full pattern discovery across all training examples
     func performCompositionalPatternDiscovery(using translationEngine: TranslationEngine) async {

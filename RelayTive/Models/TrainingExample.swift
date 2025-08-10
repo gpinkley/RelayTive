@@ -9,11 +9,12 @@ import Foundation
 
 struct TrainingExample: Identifiable, Codable {
     let id : UUID
-    let atypicalAudio: Data              // Original atypical speech recording
+    let atypicalAudio: Data              // Original atypical speech recording (legacy)
     let typicalExplanation: String       // Caregiver's explanation in typical language
     let timestamp: Date                  // When this training example was created
     var isVerified: Bool                 // Whether caregiver has verified this mapping
     var audioEmbeddings: [Float]?        // HuBERT embeddings for the atypical audio (computed once, cached)
+    var audioFileURL: URL?               // Persistent audio file URL for full recordings
     
     init(atypicalAudio: Data, typicalExplanation: String, timestamp: Date = Date(), isVerified: Bool = false) {
         self.id = UUID()
@@ -22,15 +23,17 @@ struct TrainingExample: Identifiable, Codable {
         self.timestamp = timestamp
         self.isVerified = isVerified
         self.audioEmbeddings = nil
+        self.audioFileURL = nil
     }
     
-    init(id: UUID, atypicalAudio: Data, typicalExplanation: String, timestamp: Date, isVerified: Bool = false, audioEmbeddings: [Float]? = nil) {
+    init(id: UUID, atypicalAudio: Data, typicalExplanation: String, timestamp: Date, isVerified: Bool = false, audioEmbeddings: [Float]? = nil, audioFileURL: URL? = nil) {
         self.id = id
         self.atypicalAudio = atypicalAudio
         self.typicalExplanation = typicalExplanation
         self.timestamp = timestamp
         self.isVerified = isVerified
         self.audioEmbeddings = audioEmbeddings
+        self.audioFileURL = audioFileURL
     }
 }
 
@@ -47,6 +50,43 @@ extension TrainingExample {
     
     mutating func setEmbeddings(_ embeddings: [Float]) {
         self.audioEmbeddings = embeddings
+    }
+    
+    /// Migrate audio data to file URL if needed
+    mutating func migrateAudioToFile() {
+        guard audioFileURL == nil, !atypicalAudio.isEmpty else { return }
+        
+        do {
+            let documentsDir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            let trainingAudioDir = documentsDir.appendingPathComponent("TrainingAudio")
+            
+            // Ensure directory exists
+            try FileManager.default.createDirectory(at: trainingAudioDir, withIntermediateDirectories: true, attributes: nil)
+            
+            let audioFile = trainingAudioDir.appendingPathComponent("\(id.uuidString).wav")
+            try atypicalAudio.write(to: audioFile)
+            
+            audioFileURL = audioFile
+            print("📁 Migrated audio data to file: \(audioFile.lastPathComponent)")
+        } catch {
+            print("❌ Failed to migrate audio to file: \(error)")
+        }
+    }
+    
+    /// Get audio data, preferring file URL over embedded data
+    var audioData: Data? {
+        if let fileURL = audioFileURL {
+            return try? Data(contentsOf: fileURL)
+        }
+        return atypicalAudio.isEmpty ? nil : atypicalAudio
+    }
+    
+    /// Get audio file URL, creating it if necessary
+    mutating func getOrCreateAudioFileURL() -> URL? {
+        if audioFileURL == nil {
+            migrateAudioToFile()
+        }
+        return audioFileURL
     }
 }
 

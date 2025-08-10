@@ -329,7 +329,7 @@ struct PatternDiscoveryConfig: Codable {
     static let `default`: PatternDiscoveryConfig = {
         #if DEBUG
         return PatternDiscoveryConfig(
-            segmentationStrategy: .embeddingBased(minDuration: 0.2, maxDuration: 2.0, similarityThreshold: 0.6),
+            segmentationStrategy: .adaptive,
             similarityThreshold: 0.5,
             minPatternFrequency: 1,
             maxPatternsToDiscover: 20,

@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct TranslationView: View {
     @EnvironmentObject var audioManager: AudioManager
@@ -13,6 +14,7 @@ struct TranslationView: View {
     @EnvironmentObject var translationEngine: TranslationEngine
     @State private var isRecording = false
     @State private var currentTranslation = ""
+    @State private var showingDocumentPicker = false
     
     var body: some View {
         NavigationView {
@@ -67,6 +69,22 @@ struct TranslationView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
+                // Debug audio file importer
+                #if DEBUG
+                VStack(spacing: 12) {
+                    Text("Debug File Importer")
+                        .font(.headline)
+                    
+                    Button("Import Audio File (WAV/CAF)") {
+                        showingDocumentPicker = true
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .padding()
+                .background(Color(.systemYellow).opacity(0.1))
+                .cornerRadius(12)
+                #endif
+                
                 Spacer()
                 
                 // Training examples info (read-only)
@@ -97,6 +115,13 @@ struct TranslationView: View {
                 }
             }
             .padding()
+        }
+        .fileImporter(
+            isPresented: $showingDocumentPicker,
+            allowedContentTypes: [.audio],
+            allowsMultipleSelection: false
+        ) { result in
+            handleFileImport(result: result)
         }
     }
     
@@ -166,6 +191,60 @@ struct TranslationView: View {
         // Use the new extractEmbeddings method from TranslationEngine
         return await translationEngine.extractEmbeddings(audioData)
     }
+    
+    #if DEBUG
+    private func handleFileImport(result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            processImportedAudioFile(url: url)
+        case .failure(let error):
+            print("❌ File import failed: \(error)")
+            currentTranslation = "File import failed"
+        }
+    }
+    
+    private func processImportedAudioFile(url: URL) {
+        Task {
+            do {
+                let audioData = try Data(contentsOf: url)
+                print("🔍 Processing imported file: \(url.lastPathComponent) (\(audioData.count) bytes)")
+                
+                // Run through the same translation path as live recording
+                guard translationEngine.isModelLoaded else {
+                    await MainActor.run {
+                        currentTranslation = "HuBERT model not loaded"
+                    }
+                    return
+                }
+                
+                let embeddings = await extractEmbeddingsFromAudio(audioData)
+                
+                guard let embeddings = embeddings else {
+                    await MainActor.run {
+                        currentTranslation = "Failed to process audio file"
+                    }
+                    return
+                }
+                
+                if let match = await dataManager.findTranslationForAudio(audioData, embeddings: embeddings, using: translationEngine) {
+                    await MainActor.run {
+                        currentTranslation = match.translation
+                    }
+                } else {
+                    await MainActor.run {
+                        currentTranslation = "No matching pattern found for imported file"
+                    }
+                }
+            } catch {
+                print("❌ Error reading audio file: \(error)")
+                await MainActor.run {
+                    currentTranslation = "Error reading audio file"
+                }
+            }
+        }
+    }
+    #endif
 }
 
 

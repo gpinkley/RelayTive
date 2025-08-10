@@ -25,11 +25,30 @@ class PatternDiscoveryEngine {
         print("📊 Extracted \(allSegments.count) total segments")
 
         let clusters = clusterSimilarSegments(allSegments)
-        print("🎯 Found \(clusters.count) segment clusters")
-
-        for cluster in clusters {
-            if let pattern = createPatternFromCluster(cluster, allTrainingExamples: trainingExamples) {
-                collection.addPattern(pattern)
+        
+        if clusters.isEmpty {
+            print("[Diag] discovery=0, check data volume and thresholds")
+        } else {
+            for (i, cluster) in clusters.enumerated() {
+                if let pattern = createPatternFromCluster(cluster, allTrainingExamples: trainingExamples) {
+                    collection.addPattern(pattern)
+                    
+                    // Calculate average intra-cluster cosine similarity
+                    let avgIntraCos = calculateAverageIntraClusterSimilarity(cluster)
+                    
+                    // Get example IDs or first 3
+                    let exampleIds = Array(Set(cluster.map { $0.parentExampleId }))
+                    let exampleIdStrings = exampleIds.prefix(3).map { $0.uuidString.prefix(8) }
+                    let exampleDisplay = exampleIds.count <= 3 ? 
+                        "[\(exampleIdStrings.joined(separator: ","))]" : 
+                        "[\(exampleIdStrings.joined(separator: ","))...]"
+                    
+                    print("Cluster \(i): freq=\(pattern.frequency) conf=\(String(format: "%.3f", pattern.confidence)) avgIntraCos=\(String(format: "%.3f", avgIntraCos)) examples=\(exampleDisplay)")
+                } else {
+                    // Cluster didn't meet criteria for pattern creation
+                    let avgIntraCos = calculateAverageIntraClusterSimilarity(cluster)
+                    print("Cluster \(i): freq=\(cluster.count) conf=N/A (rejected) avgIntraCos=\(String(format: "%.3f", avgIntraCos)) examples=[\(cluster.count) segments]")
+                }
             }
         }
 
@@ -277,6 +296,23 @@ class PatternDiscoveryEngine {
         let mean = xs.reduce(0, +) / Float(xs.count)
         let varSum = xs.reduce(0) { $0 + pow($1 - mean, 2) }
         return sqrt(varSum / Float(xs.count))
+    }
+    
+    private func calculateAverageIntraClusterSimilarity(_ cluster: [AudioSegment]) -> Float {
+        guard cluster.count > 1 else { return 1.0 }
+        
+        var totalSimilarity: Float = 0
+        var pairCount = 0
+        
+        for i in 0..<cluster.count {
+            for j in (i+1)..<cluster.count {
+                let similarity = cosineSimilarity(cluster[i].embeddings, cluster[j].embeddings)
+                totalSimilarity += similarity
+                pairCount += 1
+            }
+        }
+        
+        return pairCount > 0 ? totalSimilarity / Float(pairCount) : 0.0
     }
 }
 

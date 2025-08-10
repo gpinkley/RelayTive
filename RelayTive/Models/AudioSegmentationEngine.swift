@@ -51,14 +51,26 @@ class AudioSegmentationEngine {
         
         print("🔍 Extracting segments from training example: \(trainingExample.typicalExplanation)")
         
-        // Convert audio data to processable format
-        guard let audioBuffer = createAudioBuffer(from: trainingExample.atypicalAudio) else {
+        // Prefer file URL over embedded data for full recording decode
+        var mutableExample = trainingExample
+        let audioBuffer: AVAudioPCMBuffer?
+        
+        if let fileURL = mutableExample.getOrCreateAudioFileURL() {
+            audioBuffer = decodeAudioFile(from: fileURL)
+        } else if let audioData = trainingExample.audioData {
+            audioBuffer = createAudioBuffer(from: audioData)
+        } else {
+            print("❌ No audio data available for training example")
+            return []
+        }
+        
+        guard let buffer = audioBuffer else {
             print("❌ Failed to create audio buffer from training example")
             return []
         }
         
         // Determine segmentation points based on strategy
-        let segmentRanges = await determineSegmentRanges(audioBuffer: audioBuffer, strategy: strategy)
+        let segmentRanges = await determineSegmentRanges(audioBuffer: buffer, strategy: strategy)
         print("📊 Found \(segmentRanges.count) potential segments")
         
         // Extract segments and compute embeddings - ALWAYS produce embeddings via zero-padding
@@ -66,7 +78,9 @@ class AudioSegmentationEngine {
         var diagnostics: [SegmentDiag] = []
         
         for (index, range) in segmentRanges.enumerated() {
-            print("⏱️ Processing segment \(index + 1)/\(segmentRanges.count): \(range.startTime)s-\(range.endTime)s")
+            if Log.isVerbose {
+                print("⏱️ Processing segment \(index + 1)/\(segmentRanges.count): \(range.startTime)s-\(range.endTime)s")
+            }
             
             var segmentDiag = SegmentDiag(
                 idx: index + 1,
@@ -79,7 +93,7 @@ class AudioSegmentationEngine {
                 reason: "unknown"
             )
 
-            if let segmentAudio = extractAudioSegment(from: audioBuffer, range: range) {
+            if let segmentAudio = extractAudioSegment(from: buffer, range: range) {
                 // Calculate buffer diagnostics
                 let frameCount = Int(segmentAudio.frameLength)
                 let bufferAnalysis = analyzeAudioBuffer(segmentAudio)
@@ -152,13 +166,8 @@ class AudioSegmentationEngine {
         // Write diagnostics JSON report
         writeDiagnosticsReport(diagnostics: diagnostics, trainingExample: trainingExample)
        
-        let successfulSegments = diagnostics.filter { $0.success }.count
-        let totalSegments = diagnostics.count
-        print("🎯 Processed \(totalSegments) segments: \(successfulSegments) successful, \(segments.count) valid")
-        
-        #if DEBUG
-        analyzeSegmentationQuality(segments)
-        #endif
+        // Print segmentation summary
+        printSegmentationSummary(segments.filter { $0.isValid })
         
         return segments.filter { $0.isValid }
     }
@@ -176,6 +185,26 @@ class AudioSegmentationEngine {
     }
     
     // MARK: - Audio Processing
+    
+    /// Decode audio file to PCM buffer with real length (no padding)
+    private func decodeAudioFile(from url: URL) -> AVAudioPCMBuffer? {
+        do {
+            let audioFile = try AVAudioFile(forReading: url)
+            let frameCount = AVAudioFrameCount(audioFile.length)
+            
+            guard let buffer = AVAudioPCMBuffer(pcmFormat: audioFile.processingFormat, frameCapacity: frameCount) else {
+                print("❌ Failed to create PCM buffer for audio file")
+                return nil
+            }
+            
+            try audioFile.read(into: buffer)
+            print("✅ Decoded audio file: \(frameCount) frames, \(Double(frameCount) / audioFile.processingFormat.sampleRate)s duration")
+            return buffer
+        } catch {
+            print("❌ Failed to decode audio file: \(error)")
+            return nil
+        }
+    }
     
     // Deprecated - prefer extractEmbeddings(from: AVAudioPCMBuffer) for internal segments
     private func createAudioBuffer(from audioData: Data) -> AVAudioPCMBuffer? {
@@ -239,11 +268,16 @@ class AudioSegmentationEngine {
             return createAdaptiveSegments(audioBuffer: audioBuffer, totalDuration: totalDuration)
             
         case .embeddingBased(let minDuration, let maxDuration, let similarityThreshold):
+            #if DEBUG
+            print("⚠️ Using energy-adaptive segmentation in DEBUG mode instead of embedding-based")
+            return createAdaptiveSegments(audioBuffer: audioBuffer, totalDuration: totalDuration)
+            #else
             return await createEmbeddingBasedSegments(audioBuffer: audioBuffer, 
                                                     totalDuration: totalDuration, 
                                                     minDuration: minDuration, 
                                                     maxDuration: maxDuration, 
                                                     similarityThreshold: similarityThreshold)
+            #endif
         }
     }
     
@@ -413,7 +447,13 @@ class AudioSegmentationEngine {
             return createFixedSegments(totalDuration: totalDuration, segmentDuration: 0.5)
         }
         
-        let boundaries = findEmbeddingSimilarityBoundaries(embeddings: frameEmbeddings, 
+        // Cap frame embeddings to prevent excessive processing
+        let cappedEmbeddings = frameEmbeddings.count > 40 ? Array(frameEmbeddings.prefix(40)) : frameEmbeddings
+        if frameEmbeddings.count > 40 {
+            print("⚠️ Capped embeddings at 40 frames to avoid excessive processing")
+        }
+        
+        let boundaries = findEmbeddingSimilarityBoundaries(embeddings: cappedEmbeddings, 
                                                          totalDuration: totalDuration,
                                                          similarityThreshold: similarityThreshold)
         
@@ -525,21 +565,23 @@ class AudioSegmentationEngine {
         return segments
     }
     
-    private func analyzeSegmentationQuality(_ segments: [AudioSegment]) {
-        guard !segments.isEmpty else { return }
+    private func printSegmentationSummary(_ segments: [AudioSegment]) {
+        guard !segments.isEmpty else { 
+            print("Segmentation: n=0 total=0s")
+            return 
+        }
         
         let durations = segments.map { $0.duration }
-        let avgDuration = durations.reduce(0, +) / Double(durations.count)
+        let count = durations.count
+        let total = durations.reduce(0, +)
+        let avgDuration = total / Double(count)
         let minDuration = durations.min() ?? 0
         let maxDuration = durations.max() ?? 0
         
-        let variance = durations.map { pow($0 - avgDuration, 2) }.reduce(0, +) / Double(durations.count)
+        let variance = durations.map { pow($0 - avgDuration, 2) }.reduce(0, +) / Double(count)
         let stdDev = sqrt(variance)
         
-        print("📊 Segmentation Quality Analysis:")
-        print("   • Total segments: \(segments.count)")
-        print("   • Duration stats: avg=\(String(format: "%.3f", avgDuration))s, min=\(String(format: "%.3f", minDuration))s, max=\(String(format: "%.3f", maxDuration))s, std=\(String(format: "%.3f", stdDev))s")
-        print("   • Target range: 0.4-0.9s, actual in range: \(durations.filter { $0 >= 0.4 && $0 <= 0.9 }.count)/\(durations.count)")
+        print("Segmentation: n=\(count) avg=\(String(format: "%.3f", avgDuration))s min=\(String(format: "%.3f", minDuration))s max=\(String(format: "%.3f", maxDuration))s std=\(String(format: "%.3f", stdDev))s total=\(String(format: "%.3f", total))s")
     }
     
     /// Analyze audio buffer for diagnostics (no padding detection - that's in TranslationEngine)

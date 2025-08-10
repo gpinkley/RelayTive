@@ -191,6 +191,11 @@ class TranslationEngine: ObservableObject {
         return extractHuBERTEmbeddings(from: processedBuffer, using: model)
     }
     
+    /// Preprocess audio buffer for segmentation (no padding to 480k)
+    func preprocessForSegmentation(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        return preprocessForSegmentation(buffer, targetSR: 16000)
+    }
+    
     /// Legacy Data-based method - only for real files with headers
     func extractEmbeddings(_ audioData: Data) async -> [Float]? {
         // Check if this is a RIFF/WAVE file (real file with headers)
@@ -239,7 +244,58 @@ class TranslationEngine: ObservableObject {
     }
 
 
-    /// Single unified preprocessing function used by ALL callers
+    /// Preprocessing for segmentation - preserves real duration, no padding
+    private func preprocessForSegmentation(_ inputBuffer: AVAudioPCMBuffer, targetSR: Double = 16000) -> AVAudioPCMBuffer? {
+        do {
+            // Step 1: Resample to target sample rate mono if needed
+            let targetFormat = AVAudioFormat(standardFormatWithSampleRate: targetSR, channels: 1)!
+            let resampledBuffer: AVAudioPCMBuffer
+            
+            if inputBuffer.format.sampleRate == targetSR && inputBuffer.format.channelCount == 1 {
+                resampledBuffer = inputBuffer
+            } else {
+                resampledBuffer = try resampleAudio(buffer: inputBuffer, targetSampleRate: targetSR)
+            }
+            
+            let inputSamples = Int(resampledBuffer.frameLength)
+            
+            // For segmentation, preserve real length - no padding
+            guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(inputSamples)) else {
+                print("Failed to create output buffer")
+                return nil
+            }
+            
+            outputBuffer.frameLength = AVAudioFrameCount(inputSamples)
+            
+            guard let inputPtr = resampledBuffer.floatChannelData?[0],
+                  let outputPtr = outputBuffer.floatChannelData?[0] else {
+                print("Failed to get channel data")
+                return nil
+            }
+            
+            // Normalize to [-1, 1] range
+            var maxValue: Float = 0
+            for i in 0..<inputSamples {
+                maxValue = max(maxValue, abs(inputPtr[i]))
+            }
+            let normalizationFactor = maxValue > 1e-6 ? 1.0 / maxValue : 1.0
+            
+            // Copy normalized samples without padding
+            for i in 0..<inputSamples {
+                outputPtr[i] = inputPtr[i] * normalizationFactor
+            }
+            
+            print("Preprocessed for segmentation: \(inputSamples) samples at \(targetSR)Hz (no padding)")
+            
+            return outputBuffer
+            
+        } catch {
+            print("Audio preprocessing error: \(error)")
+            return nil
+        }
+    }
+    
+    /// Single unified preprocessing function for model inference - always pads to 480k
     private func preprocessAudioBuffer(_ inputBuffer: AVAudioPCMBuffer, targetSR: Double = 16000) -> AVAudioPCMBuffer? {
         do {
             // Step 1: Resample to target sample rate mono if needed
@@ -449,7 +505,19 @@ class TranslationEngine: ObservableObject {
                     dPrev = sqrt(diff.map { $0 * $0 }.reduce(0, +))
                 }
                 
-                print("[Diag] embNorm=\(String(format: "%.3f", embNorm)) dPrev=\(dPrev >= 0 ? String(format: "%.3f", dPrev) : "n/a")")
+                // Calculate zero ratio in the input audio (from the processed buffer)
+                let zeroCount = (0..<frameCount).reduce(0) { count, i in
+                    return count + (abs(audioPtr[i]) < 1e-6 ? 1 : 0)
+                }
+                let zeroRatio = Float(zeroCount) / Float(frameCount)
+                
+                print("[Diag] embNorm=\(String(format: "%.3f", embNorm)) dPrev=\(dPrev >= 0 ? String(format: "%.3f", dPrev) : "n/a") zeros=\(String(format: "%.3f", zeroRatio))")
+                
+                // Check for likely silence or bad input
+                if embNorm < 1e-3 || zeroRatio > 0.98 {
+                    print("[Diag] likely silence or bad input")
+                }
+                
                 lastEmbedding = embeddings
                 #endif
                 
