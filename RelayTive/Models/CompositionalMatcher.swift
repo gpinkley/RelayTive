@@ -237,42 +237,37 @@ class CompositionalMatcher {
         
         print("🔄 Performing whole-utterance fallback matching against \(examples.count) training examples")
         
-        // Create a temporary training example for the new audio
-        let tempExample = TrainingExample(atypicalAudio: audioData, typicalExplanation: "", timestamp: Date())
-        
-        // Try to extract whole-utterance embeddings
-        guard let wholeUtteranceEmbeddings = tempExample.audioEmbeddings else {
-            print("  ❌ No embeddings available for whole-utterance matching")
+        // Extract whole-utterance embeddings from the new audio
+        guard let wholeUtteranceEmbeddings = await segmentationEngine.extractEmbeddings(from: audioData) else {
+            print("  ❌ Could not compute whole-utterance embeddings")
             return createNoMatchResult()
         }
         
-        // Find best matching training example
-        var bestMatch: (example: TrainingExample, similarity: Float)?
+        let ranked = rankExamples(bySimilarityTo: wholeUtteranceEmbeddings, in: examples)
+        guard let (best, bestScore) = ranked.first else { return createNoMatchResult() }
+        print("[Diag] Fallback top-5:", ranked.prefix(5).map { (ex, s) in "\(ex.typicalExplanation):\(String(format: "%.3f", s))" }.joined(separator: ", "))
         
-        for example in examples {
-            guard let exampleEmbeddings = example.audioEmbeddings else { continue }
-            
-            let similarity = cosineSimilarity(wholeUtteranceEmbeddings, exampleEmbeddings)
-            
-            if similarity > config.fallbackSimilarityThreshold &&
-               (bestMatch == nil || similarity > bestMatch!.similarity) {
-                bestMatch = (example, similarity)
-            }
-        }
-        
-        if let match = bestMatch {
-            print("  ✅ Found whole-utterance match with \(match.similarity) similarity")
+        if bestScore > config.fallbackSimilarityThreshold {
+            print("  ✅ Found whole-utterance match with \(bestScore) similarity")
             
             return PatternMatchResult(
                 matchedPatterns: [], // No compositional patterns
-                overallConfidence: match.similarity,
-                reconstructedTranslation: match.example.typicalExplanation,
-                explanation: "Whole-utterance match (similarity: \(Int(match.similarity * 100))%)"
+                overallConfidence: bestScore,
+                reconstructedTranslation: best.typicalExplanation,
+                explanation: "Whole-utterance match (similarity: \(Int(bestScore * 100))%)"
             )
         } else {
-            print("  ❌ No suitable whole-utterance match found")
+            print("  ❌ No suitable whole-utterance match found (best: \(bestScore))")
             return createNoMatchResult()
         }
+    }
+    
+    private func rankExamples(bySimilarityTo q: [Float], in examples: [TrainingExample]) -> [(TrainingExample, Float)] {
+        examples.compactMap { ex in
+            guard let emb = ex.audioEmbeddings else { return nil }
+            return (ex, cosineSimilarity(q, emb))
+        }
+        .sorted { $0.1 > $1.1 }
     }
     
     // MARK: - Utility Methods
@@ -314,11 +309,11 @@ struct CompositionalMatchingConfig {
     let segmentationStrategy: SegmentationStrategy // Strategy for segmenting new audio
     
     static let `default` = CompositionalMatchingConfig(
-        minMatchConfidence: 0.6,
-        minCoverageThreshold: 0.4,
-        minCombinedConfidence: 0.5,
-        fallbackSimilarityThreshold: 0.7,
-        segmentationStrategy: .variable(minDuration: 0.2, maxDuration: 1.0, overlap: 0.1)
+        minMatchConfidence: 0.4,
+        minCoverageThreshold: 0.25,
+        minCombinedConfidence: 0.3,
+        fallbackSimilarityThreshold: 0.5,
+        segmentationStrategy: .variable(minDuration: 0.15, maxDuration: 1.2, overlap: 0.1)
     )
     
     static let conservative = CompositionalMatchingConfig(

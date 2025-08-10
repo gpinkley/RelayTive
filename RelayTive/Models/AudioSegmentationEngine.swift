@@ -26,11 +26,11 @@ class AudioSegmentationEngine {
     
     // MARK: - Tuning Constants
     struct SegmentationTuning {
-        static let minDuration: TimeInterval = 0.5   // Minimum viable segment
-        static let maxDuration: TimeInterval = 2.0   // Allow longer segments to get meaningful audio
-        static let frameDuration: TimeInterval = 0.5  // Much longer frames for meaningful content
-        static let stepDuration: TimeInterval = 0.25  // Less overlap
-        static let similarityThreshold: Float = 0.8   // More selective
+        static let minDuration: TimeInterval = 0.5
+        static let maxDuration: TimeInterval = 2.0
+        static let frameDuration: TimeInterval = 0.050
+        static let stepDuration: TimeInterval = 0.025
+        static let similarityThreshold: Float = 0.75
     }
     private let translationEngine: TranslationEngine
     private let audioFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
@@ -43,7 +43,11 @@ class AudioSegmentationEngine {
     
     /// Extract temporal segments from a training example and compute their embeddings
     func extractSegments(from trainingExample: TrainingExample, 
-                        strategy: SegmentationStrategy = .fixed(window: 2.0, overlap: 0.0)) async -> [AudioSegment] {
+                        strategy: SegmentationStrategy = .embeddingBased(
+                            minDuration: SegmentationTuning.minDuration,
+                            maxDuration: SegmentationTuning.maxDuration,
+                            similarityThreshold: SegmentationTuning.similarityThreshold
+                        )) async -> [AudioSegment] {
         
         print("🔍 Extracting segments from training example: \(trainingExample.typicalExplanation)")
         
