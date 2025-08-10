@@ -90,6 +90,8 @@ class DataManager: ObservableObject {
             return findTranslationForEmbeddings(embeddings)
         }
         
+        // Pattern matching re-enabled with fixes
+        
         // Try compositional matching first
         print("🎯 Attempting compositional pattern matching")
         let matchResult = await matcher.matchAudio(audioData, 
@@ -137,8 +139,10 @@ class DataManager: ObservableObject {
             return
         }
         
+        // Re-enabled pattern discovery with memory and performance fixes
+        
         // Prevent running if already processing
-        if isProcessingPatterns {
+        guard !isProcessingPatterns else {
             print("⚠️ Pattern discovery already in progress, skipping")
             return
         }

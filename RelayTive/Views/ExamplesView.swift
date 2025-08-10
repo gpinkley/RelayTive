@@ -9,7 +9,6 @@ import SwiftUI
 
 struct ExamplesView: View {
     @EnvironmentObject var dataManager: DataManager
-    @EnvironmentObject var audioManager: AudioManager
     @State private var searchText = ""
     @State private var filterVerified: FilterOption = .all
     @State private var selectedUtterance: Utterance?
@@ -105,18 +104,9 @@ struct ExamplesView: View {
 struct ExampleRow: View {
     let utterance: Utterance
     let onTap: () -> Void
-    @EnvironmentObject var audioManager: AudioManager
     
     var body: some View {
         HStack(spacing: 12) {
-            // Play button
-            Button(action: playAudio) {
-                Image(systemName: "play.circle.fill")
-                    .font(.title2)
-                    .foregroundColor(.blue)
-            }
-            .buttonStyle(PlainButtonStyle())
-            
             // Content
             VStack(alignment: .leading, spacing: 4) {
                 Text(utterance.translation)
@@ -152,11 +142,6 @@ struct ExampleRow: View {
             onTap()
         }
     }
-    
-    private func playAudio() {
-        // TODO: Play the original audio recording
-        audioManager.playAudio(utterance.originalAudio)
-    }
 }
 
 struct ExampleDetailView: View {
@@ -172,23 +157,10 @@ struct ExampleDetailView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 20) {
-                // Audio playback section
+                // Recording info section
                 VStack(spacing: 12) {
                     Text("Original Recording")
                         .font(.headline)
-                    
-                    Button(action: playOriginalAudio) {
-                        HStack {
-                            Image(systemName: "play.circle.fill")
-                            Text("Play Recording")
-                        }
-                        .font(.title3)
-                        .padding()
-                        .background(Color.blue)
-                        .foregroundColor(.white)
-                        .cornerRadius(10)
-                    }
-                    .buttonStyle(PlainButtonStyle())
                     
                     Text("Recorded on \(editedUtterance.timestamp, style: .date)")
                         .font(.caption)
@@ -256,15 +228,10 @@ struct ExampleDetailView: View {
             }
         }
     }
-    
-    private func playOriginalAudio() {
-        // TODO: Play the original audio
-    }
 }
 
 
 #Preview {
     ExamplesView()
         .environmentObject(DataManager())
-        .environmentObject(AudioManager())
 }

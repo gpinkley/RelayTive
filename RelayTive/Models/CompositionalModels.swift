@@ -326,15 +326,27 @@ struct PatternDiscoveryConfig: Codable {
     let minPatternConfidence: Float
     let meaningConsistencyThreshold: Float
 
-    static let `default` = PatternDiscoveryConfig(
-        segmentationStrategy: .embeddingBased(minDuration: 0.2, maxDuration: 2.0, similarityThreshold: 0.6),
-        // Relaxed config for testing - easier discovery with limited data
-        similarityThreshold: 0.5,
-        minPatternFrequency: 1,
-        maxPatternsToDiscover: 20,
-        minPatternConfidence: 0.25,
-        meaningConsistencyThreshold: 0.6
-    )
+    static let `default`: PatternDiscoveryConfig = {
+        #if DEBUG
+        return PatternDiscoveryConfig(
+            segmentationStrategy: .embeddingBased(minDuration: 0.2, maxDuration: 2.0, similarityThreshold: 0.6),
+            similarityThreshold: 0.5,
+            minPatternFrequency: 1,
+            maxPatternsToDiscover: 20,
+            minPatternConfidence: 0.25,
+            meaningConsistencyThreshold: 0.6
+        )
+        #else
+        return PatternDiscoveryConfig(
+            segmentationStrategy: .embeddingBased(minDuration: 0.25, maxDuration: 1.5, similarityThreshold: 0.72),
+            similarityThreshold: 0.70,
+            minPatternFrequency: 2,
+            maxPatternsToDiscover: 16,
+            minPatternConfidence: 0.45,
+            meaningConsistencyThreshold: 0.70
+        )
+        #endif
+    }()
 }
 
 // ============================================================

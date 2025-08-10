@@ -10,4 +10,5 @@ build/
 *.swp
 
 *.md
-Git_Commit_Message.txt
+*.txt
+*.rtf

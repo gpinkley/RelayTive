@@ -23,6 +23,12 @@ class SpeechRecognitionManager: ObservableObject {
     private let audioEngine = AVAudioEngine()
     private var speechRecognizerDelegate: SpeechRecognizerDelegate?
     
+    // Error handling and retry logic
+    private var lastErrorTime: Date?
+    private var consecutiveErrors: Int = 0
+    private let maxConsecutiveErrors = 3
+    private let errorCooldownPeriod: TimeInterval = 2.0
+    
     init() {
         // Use device locale, fallback to English
         speechRecognizer = SFSpeechRecognizer(locale: Locale.current) ?? SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
@@ -106,6 +112,19 @@ class SpeechRecognitionManager: ObservableObject {
     // MARK: - Speech Recognition
     
     func startRecording() async {
+        // Check for recent errors and apply backoff
+        if let lastError = lastErrorTime, 
+           Date().timeIntervalSince(lastError) < errorCooldownPeriod {
+            errorMessage = "Speech recognition cooling down after recent errors"
+            return
+        }
+        
+        // Check for too many consecutive errors
+        if consecutiveErrors >= maxConsecutiveErrors {
+            errorMessage = "Too many consecutive speech recognition errors. Please try again later."
+            return
+        }
+        
         // Ensure we have permissions
         guard await requestPermissions() else { return }
         
@@ -115,8 +134,14 @@ class SpeechRecognitionManager: ObservableObject {
             return
         }
         
-        // Cancel any existing task
+        // Cancel any existing task properly
         stopRecording()
+        
+        // Prevent starting if already running
+        guard !isRecording else {
+            print("Speech recognition already running")
+            return
+        }
         
         do {
             // Configure audio session
@@ -138,10 +163,13 @@ class SpeechRecognitionManager: ObservableObject {
                 Task { @MainActor in
                     if let result = result {
                         self?.recognizedText = result.bestTranscription.formattedString
+                        // Reset error count on successful result
+                        self?.consecutiveErrors = 0
                     }
                     
                     if let error = error {
-                        self?.errorMessage = "Recognition error: \(error.localizedDescription)"
+                        let nsError = error as NSError
+                        self?.handleRecognitionError(nsError)
                         self?.stopRecording()
                     }
                     
@@ -198,6 +226,33 @@ class SpeechRecognitionManager: ObservableObject {
         } catch {
             print("Failed to reset audio session: \(error)")
         }
+    }
+    
+    // MARK: - Error Handling
+    
+    private func handleRecognitionError(_ error: NSError) {
+        lastErrorTime = Date()
+        consecutiveErrors += 1
+        
+        // Handle specific error codes
+        switch error.code {
+        case 1101: // kAFAssistant error
+            errorMessage = "Speech recognition service temporarily unavailable"
+            print("Speech recognition error 1101 - service issue, will backoff")
+        case 203: // Network error
+            errorMessage = "Network error during speech recognition"
+        default:
+            errorMessage = "Recognition error: \(error.localizedDescription)"
+        }
+        
+        print("Speech recognition error \(error.code): \(error.localizedDescription), consecutive errors: \(consecutiveErrors)")
+    }
+    
+    // Reset error state manually if needed
+    func resetErrorState() {
+        consecutiveErrors = 0
+        lastErrorTime = nil
+        errorMessage = nil
     }
     
     // MARK: - Utilities

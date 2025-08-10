@@ -123,7 +123,10 @@ class TranslationEngine: ObservableObject {
     
     /// Extract embeddings from a file URL (for real recordings with headers)
     func extractEmbeddings(fromFile url: URL) async -> [Float]? {
-        let fileHash = url.absoluteString
+        let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+        let size = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+        let mtime = (attrs?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        let fileHash = "\(url.path)|\(size)|\(mtime)"
         
         // Check cache first
         if let cachedEmbeddings = embeddingCache[fileHash] {
@@ -158,7 +161,7 @@ class TranslationEngine: ObservableObject {
             lastProcessingTime = endTime - startTime
             
             // Cache the result
-            embeddingCache[fileHash] = embeddings
+            manageCache(audioHash: fileHash, embeddings: embeddings)
             
             print("HuBERT file processing completed in \(String(format: "%.2f", lastProcessingTime)) seconds")
             return embeddings
@@ -250,7 +253,10 @@ class TranslationEngine: ObservableObject {
             }
             
             let inputSamples = Int(resampledBuffer.frameLength)
-            let expectedSamples = 480000
+            let expectedSamples = 480_000
+            if inputSamples > expectedSamples {
+                print("Audio truncated from \(inputSamples) to \(expectedSamples) samples")
+            }
             
             // Step 2: Create output buffer with exactly 480k samples
             guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(expectedSamples)) else {
@@ -410,10 +416,14 @@ class TranslationEngine: ObservableObject {
                 return nil
             }
             
-            // Copy audio data directly to MLMultiArray (no intermediate float array)
-            for index in 0..<expectedInputSize {
-                inputArray[index] = NSNumber(value: audioPtr[index])
-            }
+            // Fast path copy into MLMultiArray (contiguous float32 expected)
+            let dst = inputArray.dataPointer.bindMemory(to: Float.self, capacity: expectedInputSize)
+            dst.update(from: audioPtr, count: expectedInputSize)
+            
+            // Fallback: Copy audio data directly to MLMultiArray (no intermediate float array)
+            // for index in 0..<expectedInputSize {
+            //     inputArray[index] = NSNumber(value: audioPtr[index])
+            // }
             
             // Create the input dictionary using the correct key from model description
             let input = try MLDictionaryFeatureProvider(dictionary: ["audio_input": inputArray])
