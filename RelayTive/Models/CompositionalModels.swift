@@ -274,6 +274,28 @@ struct PatternCollection: Codable {
     }
 
     mutating func markDiscoveryComplete() { lastDiscoveryRun = Date() }
+    
+    /// Aggressively prune patterns to keep memory usage low
+    mutating func aggressivePrune() {
+        let initialCount = patterns.count
+        
+        // Remove patterns with low frequency/confidence first
+        patterns.removeAll { pattern in
+            pattern.frequency < 3 || pattern.confidence < 0.6
+        }
+        
+        // If still too many patterns, keep only the most significant ones
+        if patterns.count > 8 {
+            patterns = Array(patterns
+                .sorted { $0.confidence > $1.confidence }
+                .prefix(8))
+        }
+        
+        let removedCount = initialCount - patterns.count
+        if removedCount > 0 {
+            print("🧹 Aggressive pruning removed \(removedCount) patterns, kept \(patterns.count)")
+        }
+    }
 
     func findSimilarPatterns(to embedding: [Float], threshold: Float = 0.7)
       -> [(pattern: CompositionalPattern, similarity: Float)] {
@@ -308,7 +330,7 @@ struct PatternDiscoveryConfig: Codable {
         segmentationStrategy: .embeddingBased(minDuration: 0.25, maxDuration: 1.5, similarityThreshold: 0.72),
         similarityThreshold: 0.70,
         minPatternFrequency: 2,
-        maxPatternsToDiscover: 64,
+        maxPatternsToDiscover: 16, // Reduce from 64 to save memory
         minPatternConfidence: 0.45,
         meaningConsistencyThreshold: 0.70
     )

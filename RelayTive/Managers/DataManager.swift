@@ -23,6 +23,7 @@ class DataManager: ObservableObject {
     private var patternDiscoveryEngine: PatternDiscoveryEngine?
     private var compositionalMatcher: CompositionalMatcher?
     private var isProcessingPatterns = false // Prevent concurrent pattern discovery
+    private var patternDiscoveryEnabled = true // Can be disabled for memory efficiency
     
     init() {
         loadTrainingExamples()
@@ -48,6 +49,14 @@ class DataManager: ObservableObject {
     
     func addTrainingExample(_ example: TrainingExample) {
         trainingExamples.insert(example, at: 0) // Most recent first
+        
+        // Keep only recent examples in memory to prevent memory bloat
+        if trainingExamples.count > 15 {
+            let removedCount = trainingExamples.count - 15
+            trainingExamples = Array(trainingExamples.prefix(15))
+            print("🧹 Memory management: kept recent 15 examples, removed \(removedCount) older ones")
+        }
+        
         saveTrainingExamples()
         print("Training example added: \(example.typicalExplanation)")
     }
@@ -122,6 +131,12 @@ class DataManager: ObservableObject {
     func performCompositionalPatternDiscovery(using translationEngine: TranslationEngine) async {
         print("🔍 Starting compositional pattern discovery")
         
+        // Skip if pattern discovery is disabled for memory efficiency
+        if !patternDiscoveryEnabled {
+            print("⚠️ Pattern discovery disabled for memory efficiency")
+            return
+        }
+        
         // Prevent running if already processing
         if isProcessingPatterns {
             print("⚠️ Pattern discovery already in progress, skipping")
@@ -141,22 +156,27 @@ class DataManager: ObservableObject {
             return
         }
         
-        // Only discover patterns if we have sufficient training data
-        guard examplesWithEmbeddings.count >= 2 && examplesWithEmbeddings.count <= 20 else {
+        // Only discover patterns if we have sufficient training data - limit to 8 examples for memory efficiency
+        guard examplesWithEmbeddings.count >= 2 && examplesWithEmbeddings.count <= 8 else {
             if examplesWithEmbeddings.count < 2 {
                 print("⚠️ Need at least 2 examples with embeddings for pattern discovery")
             } else {
-                print("⚠️ Too many examples (\(examplesWithEmbeddings.count)), limiting pattern discovery")
+                print("⚠️ Too many examples (\(examplesWithEmbeddings.count)), limiting pattern discovery for memory efficiency")
             }
             return
         }
         
-        // Run pattern discovery
-        let discoveredPatterns = await discoveryEngine.discoverPatterns(from: examplesWithEmbeddings)
+        // Run pattern discovery on limited dataset for memory efficiency
+        let limitedExamples = Array(examplesWithEmbeddings.suffix(8)) // Use only most recent 8
+        let discoveredPatterns = await discoveryEngine.discoverPatterns(from: limitedExamples)
         
         // Update our pattern collection
         await MainActor.run {
             compositionalPatterns = discoveredPatterns
+            
+            // Aggressively prune to maintain memory efficiency
+            compositionalPatterns.aggressivePrune()
+            
             saveCompositionalPatterns()
             
             print("✅ Pattern discovery complete: \(compositionalPatterns.significantPatterns.count) significant patterns found")
@@ -282,6 +302,35 @@ class DataManager: ObservableObject {
         }
     }
     
+    // MARK: - Memory Management
+    
+    /// Disable pattern discovery to save memory
+    func disablePatternDiscovery() {
+        patternDiscoveryEnabled = false
+        print("🧹 Pattern discovery disabled for memory efficiency")
+    }
+    
+    /// Enable pattern discovery 
+    func enablePatternDiscovery() {
+        patternDiscoveryEnabled = true
+        print("🚀 Pattern discovery enabled")
+    }
+    
+    /// Force cleanup of patterns to free memory
+    func cleanupPatterns() {
+        compositionalPatterns.aggressivePrune()
+        saveCompositionalPatterns()
+        print("🧹 Patterns cleaned up, \(compositionalPatterns.patterns.count) remaining")
+    }
+    
+    /// Get memory usage estimate
+    func estimateMemoryUsage() -> (examples: Int, patterns: Int, segments: Int) {
+        let exampleCount = trainingExamples.count
+        let patternCount = compositionalPatterns.patterns.count
+        let segmentCount = compositionalPatterns.patterns.reduce(0) { $0 + $1.contributingSegments.count }
+        return (exampleCount, patternCount, segmentCount)
+    }
+    
     // MARK: - Development Helpers
     
     func clearAllTrainingData() {
@@ -289,6 +338,7 @@ class DataManager: ObservableObject {
         compositionalPatterns = PatternCollection()
         userDefaults.removeObject(forKey: trainingExamplesKey)
         userDefaults.removeObject(forKey: compositionalPatternsKey)
+        patternDiscoveryEnabled = true // Reset to enabled
         print("All training data and compositional patterns cleared")
     }
     

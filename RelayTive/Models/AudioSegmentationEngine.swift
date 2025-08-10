@@ -14,11 +14,11 @@ class AudioSegmentationEngine {
     
     // MARK: - Tuning Constants
     struct SegmentationTuning {
-        static let minDuration: TimeInterval = 0.25
-        static let maxDuration: TimeInterval = 1.5
-        static let frameDuration: TimeInterval = 0.050
-        static let stepDuration: TimeInterval = 0.025
-        static let similarityThreshold: Float = 0.72
+        static let minDuration: TimeInterval = 0.4  // Increase to reduce segment count
+        static let maxDuration: TimeInterval = 1.2  // Decrease to reduce segment count
+        static let frameDuration: TimeInterval = 0.075  // Increase to reduce frame count
+        static let stepDuration: TimeInterval = 0.050   // Increase to reduce frame count
+        static let similarityThreshold: Float = 0.75    // Increase to be more selective
     }
     private let translationEngine: TranslationEngine
     private let audioFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1)!
