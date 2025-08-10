@@ -109,11 +109,6 @@ struct TrainingView: View {
                 }
                 
                 Spacer()
-                
-                // Recent examples
-                if !dataManager.allUtterances.isEmpty {
-                    RecentTrainingExamplesView()
-                }
             }
             .padding()
         }
@@ -636,41 +631,6 @@ struct ManualExplanationEntrySheet: View {
                 }
             }
         }
-    }
-}
-
-struct RecentTrainingExamplesView: View {
-    @EnvironmentObject var dataManager: DataManager
-    
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Recent Examples")
-                .font(.headline)
-            
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 12) {
-                    ForEach(dataManager.allUtterances.prefix(3)) { utterance in
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(utterance.translation)
-                                .font(.caption)
-                                .lineLimit(2)
-                                .frame(width: 120, alignment: .leading)
-                            
-                            Text(utterance.timestamp, style: .relative)
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
-                        }
-                        .padding(8)
-                        .background(Color(.systemGray6))
-                        .cornerRadius(8)
-                    }
-                }
-                .padding(.horizontal)
-            }
-        }
-        .padding()
-        .background(Color(.systemGray6).opacity(0.5))
-        .cornerRadius(12)
     }
 }
 
