@@ -23,28 +23,15 @@ class AudioManager: ObservableObject {
     private var currentRecordingURL: URL?
     
     init() {
-        setupAudioSession()
-    }
-    
-    // MARK: - Audio Session Setup
-    
-    private func setupAudioSession() {
-        do {
-            // Configure for both recording and playback with proper routing
-            try recordingSession.setCategory(.playAndRecord, 
-                                           mode: .default, 
-                                           options: [.defaultToSpeaker, .allowBluetooth])
-            try recordingSession.setActive(true)
-            print("Audio session configured for record/playback with speaker output")
-        } catch {
-            print("Failed to set up recording session: \(error)")
-        }
+        // Session management now handled by CaptureCoordinator
+        // No automatic session setup
     }
     
     // MARK: - Recording
     
     func startRecording() {
-        // Request microphone permission
+        // CaptureCoordinator should have already configured session
+        // Just request permission and start recording
         requestMicrophonePermission { [weak self] granted in
             if granted {
                 Task { @MainActor in
@@ -122,18 +109,13 @@ class AudioManager: ObservableObject {
             audioPlayer?.volume = 1.0
             audioPlayer?.prepareToPlay()
             
-            // Ensure audio session is configured for playback
-            try recordingSession.setCategory(.playAndRecord, 
-                                           mode: .default, 
-                                           options: [.defaultToSpeaker, .allowBluetooth])
-            try recordingSession.overrideOutputAudioPort(.speaker)
+            // Session management handled by CaptureCoordinator
+            // Just configure playback settings
             
             // Keep a strong reference to the delegate
             audioPlayerDelegate = AudioPlayerDelegate { [weak self] in
                 Task { @MainActor in
                     self?.isPlaying = false
-                    // Reset audio session after playback
-                    try? self?.recordingSession.overrideOutputAudioPort(.none)
                     // Clean up temp file
                     try? FileManager.default.removeItem(at: tempURL)
                 }

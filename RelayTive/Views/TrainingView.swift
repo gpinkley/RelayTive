@@ -20,7 +20,8 @@ struct TrainingView: View {
     @EnvironmentObject var audioManager: AudioManager
     @EnvironmentObject var dataManager: DataManager
     @EnvironmentObject var translationEngine: TranslationEngine
-    @StateObject private var speechRecognizer = SpeechRecognitionManager()
+    @EnvironmentObject var speechService: SpeechService
+    @EnvironmentObject var captureCoordinator: CaptureCoordinator
     
     @State private var currentStep: TrainingStep = .ready
     @State private var atypicalRecording: Data?
@@ -74,7 +75,7 @@ struct TrainingView: View {
                         
                     case .recordingExplanation:
                         RecordingExplanationView(
-                            recognizedText: speechRecognizer.recognizedText,
+                            recognizedText: speechService.recognizedText,
                             onStop: {
                                 stopExplanationRecording()
                             }
@@ -96,7 +97,7 @@ struct TrainingView: View {
                     // Explanation input for gettingExplanation step
                     if currentStep == .gettingExplanation {
                         ExplanationInputView(
-                            speechRecognizer: speechRecognizer,
+                            speechService: speechService,
                             explanationText: $explanationText,
                             onSpeechStart: {
                                 startExplanationRecording()
@@ -127,26 +128,31 @@ struct TrainingView: View {
     
     private func startAtypicalRecording() {
         currentStep = .recordingAtypical
-        audioManager.startRecording()
+        Task {
+            await captureCoordinator.beginAppRecording()
+        }
     }
     
     private func stopAtypicalRecording() {
         atypicalRecording = audioManager.stopRecording()
+        captureCoordinator.endAppRecording()
         currentStep = .atypicalRecorded
     }
     
     private func startExplanationRecording() {
         currentStep = .recordingExplanation
-        speechRecognizer.clearText()
+        speechService.clearText()
         
         Task {
-            await speechRecognizer.startRecording()
+            await captureCoordinator.beginSpeechRecognition()
         }
     }
     
     private func stopExplanationRecording() {
-        speechRecognizer.stopRecording()
-        explanationText = speechRecognizer.recognizedText
+        Task {
+            await captureCoordinator.endSpeechRecognition(reason: "user stopped")
+        }
+        explanationText = speechService.recognizedText
         currentStep = .complete
     }
     
@@ -203,7 +209,7 @@ struct TrainingView: View {
         currentStep = .ready
         atypicalRecording = nil
         explanationText = ""
-        speechRecognizer.clearText()
+        speechService.clearText()
         showingManualEntry = false
     }
 }
@@ -512,7 +518,7 @@ struct CompletedTrainingView: View {
 }
 
 struct ExplanationInputView: View {
-    @ObservedObject var speechRecognizer: SpeechRecognitionManager
+    @ObservedObject var speechService: SpeechService
     @Binding var explanationText: String
     let onSpeechStart: () -> Void
     let onComplete: () -> Void
@@ -527,12 +533,12 @@ struct ExplanationInputView: View {
                         Text("Record")
                             .font(.caption)
                     }
-                    .foregroundColor(speechRecognizer.canRecord ? .blue : .gray)
+                    .foregroundColor(speechService.canRecord ? .blue : .gray)
                     .frame(width: 80, height: 60)
-                    .background((speechRecognizer.canRecord ? Color.blue : Color.gray).opacity(0.1))
+                    .background((speechService.canRecord ? Color.blue : Color.gray).opacity(0.1))
                     .cornerRadius(10)
                 }
-                .disabled(!speechRecognizer.canRecord)
+                .disabled(!speechService.canRecord)
                 .buttonStyle(PlainButtonStyle())
                 
                 VStack(alignment: .leading, spacing: 5) {
@@ -560,7 +566,7 @@ struct ExplanationInputView: View {
                 .buttonStyle(PlainButtonStyle())
             }
             
-            if let error = speechRecognizer.errorMessage {
+            if let error = speechService.errorMessage {
                 Text(error)
                     .font(.caption)
                     .foregroundColor(.red)

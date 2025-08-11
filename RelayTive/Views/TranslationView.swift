@@ -12,9 +12,13 @@ struct TranslationView: View {
     @EnvironmentObject var audioManager: AudioManager
     @EnvironmentObject var dataManager: DataManager
     @EnvironmentObject var translationEngine: TranslationEngine
-    @State private var isRecording = false
+    @EnvironmentObject var captureCoordinator: CaptureCoordinator
     @State private var currentTranslation = ""
     @State private var showingDocumentPicker = false
+    
+    private var isRecording: Bool {
+        captureCoordinator.state == .recordingAppAudio
+    }
     
     var body: some View {
         NavigationView {
@@ -107,20 +111,23 @@ struct TranslationView: View {
     }
     
     private func startRecording() {
-        isRecording = true
-        audioManager.startRecording()
         currentTranslation = "" // Clear previous translation
+        Task {
+            await captureCoordinator.beginAppRecording()
+        }
     }
     
-    private func stopRecording() {
-        isRecording = false
-        
+    private func stopRecording() {        
         // Get recorded audio data
         guard let audioData = audioManager.stopRecording() else {
+            captureCoordinator.endAppRecording()
             print("No audio data captured")
             currentTranslation = "No audio captured. Please try again."
             return
         }
+        
+        // End coordination
+        captureCoordinator.endAppRecording()
         
         // Process audio through HuBERT model to get embeddings, then lookup in training data
         Task {
