@@ -26,8 +26,8 @@ class AudioSegmentationEngine {
     
     // MARK: - Tuning Constants
     struct SegmentationTuning {
-        static let minDuration: TimeInterval = 0.5
-        static let maxDuration: TimeInterval = 2.0
+        static let minDuration: TimeInterval = 0.20
+        static let maxDuration: TimeInterval = 0.75
         static let frameDuration: TimeInterval = 0.050
         static let stepDuration: TimeInterval = 0.025
         static let similarityThreshold: Float = 0.75
@@ -43,11 +43,17 @@ class AudioSegmentationEngine {
     
     /// Extract temporal segments from a training example and compute their embeddings
     func extractSegments(from trainingExample: TrainingExample, 
-                        strategy: SegmentationStrategy = .embeddingBased(
-                            minDuration: SegmentationTuning.minDuration,
-                            maxDuration: SegmentationTuning.maxDuration,
-                            similarityThreshold: SegmentationTuning.similarityThreshold
-                        )) async -> [AudioSegment] {
+                        strategy: SegmentationStrategy = {
+                            #if DEBUG
+                            return .adaptive
+                            #else
+                            return .embeddingBased(
+                                minDuration: SegmentationTuning.minDuration,
+                                maxDuration: SegmentationTuning.maxDuration,
+                                similarityThreshold: SegmentationTuning.similarityThreshold
+                            )
+                            #endif
+                        }()) async -> [AudioSegment] {
         
         print("🔍 Extracting segments from training example: \(trainingExample.typicalExplanation)")
         

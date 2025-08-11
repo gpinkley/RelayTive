@@ -237,19 +237,44 @@ class CompositionalMatcher {
         
         print("🔄 Performing whole-utterance fallback matching against \(examples.count) training examples")
         
-        // Extract whole-utterance embeddings from the new audio
-        guard let wholeUtteranceEmbeddings = await segmentationEngine.extractEmbeddings(from: audioData) else {
-            print("  ❌ Could not compute whole-utterance embeddings")
+        // Strategy 1: Use segment-mean query from voiced segments
+        let voicedSegments = segments.filter { $0.confidence > 0.2 }
+        
+        var queryEmbedding: [Float]?
+        var queryDescription = ""
+        
+        if voicedSegments.count >= 1 {
+            // Compute segment-mean query embedding
+            let segmentEmbeddings = voicedSegments.map { $0.embeddings }
+            if let avgEmbedding = averageEmbedding(from: segmentEmbeddings) {
+                queryEmbedding = avgEmbedding
+                queryDescription = "segment-mean query (\(voicedSegments.count) voiced segments)"
+                print("  🎯 Using \(queryDescription)")
+            }
+        }
+        
+        // Strategy 2: Fallback to whole-utterance embedding if segment-mean failed
+        if queryEmbedding == nil {
+            print("  ⚠️ No voiced segments found, falling back to whole-utterance embedding")
+            guard let wholeUtteranceEmbeddings = await segmentationEngine.extractEmbeddings(from: audioData) else {
+                print("  ❌ Could not compute whole-utterance embeddings")
+                return createNoMatchResult()
+            }
+            queryEmbedding = wholeUtteranceEmbeddings
+            queryDescription = "whole-utterance query"
+        }
+        
+        guard let queryEmb = queryEmbedding else {
             return createNoMatchResult()
         }
         
-        let ranked = rankExamples(bySimilarityTo: wholeUtteranceEmbeddings, in: examples)
+        let ranked = rankExamples(bySimilarityTo: queryEmb, in: examples)
         guard let (best, bestScore) = ranked.first else { return createNoMatchResult() }
         print("[Diag] Fallback top-5:", ranked.prefix(5).map { (ex, s) in "\(ex.typicalExplanation):\(String(format: "%.3f", s))" }.joined(separator: ", "))
         
         // Check for degenerate embeddings (likely all silence/padding)
-        let embNorm = sqrt(wholeUtteranceEmbeddings.map { $0 * $0 }.reduce(0, +))
-        let zeroRatio = Float(wholeUtteranceEmbeddings.filter { abs($0) < 1e-6 }.count) / Float(wholeUtteranceEmbeddings.count)
+        let embNorm = sqrt(queryEmb.map { $0 * $0 }.reduce(0, +))
+        let zeroRatio = Float(queryEmb.filter { abs($0) < 1e-6 }.count) / Float(queryEmb.count)
         
         if embNorm < 1e-3 || zeroRatio > 0.5 {
             print("[Diag] Rejecting match due to degenerate embeddings: embNorm=\(embNorm), zeroRatio=\(zeroRatio)")
@@ -271,7 +296,7 @@ class CompositionalMatcher {
                 matchedPatterns: [], // No compositional patterns
                 overallConfidence: bestScore,
                 reconstructedTranslation: best.typicalExplanation,
-                explanation: "Whole-utterance match (similarity: \(Int(bestScore * 100))%)"
+                explanation: "Whole-utterance match using \(queryDescription) (similarity: \(Int(bestScore * 100))%)"
             )
         } else {
             print("  ❌ No suitable whole-utterance match found (best: \(bestScore))")
@@ -329,8 +354,14 @@ struct CompositionalMatchingConfig {
         minMatchConfidence: 0.4,
         minCoverageThreshold: 0.25,
         minCombinedConfidence: 0.3,
-        fallbackSimilarityThreshold: 0.5,
-        segmentationStrategy: .variable(minDuration: 0.15, maxDuration: 1.2, overlap: 0.1)
+        fallbackSimilarityThreshold: 0.65,
+        segmentationStrategy: {
+            #if DEBUG
+            return .adaptive
+            #else
+            return .variable(minDuration: 0.20, maxDuration: 0.75, overlap: 0.1)
+            #endif
+        }()
     )
     
     static let conservative = CompositionalMatchingConfig(

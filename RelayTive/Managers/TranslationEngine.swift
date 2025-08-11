@@ -295,7 +295,7 @@ class TranslationEngine: ObservableObject {
         }
     }
     
-    /// Single unified preprocessing function for model inference - always pads to 480k
+    /// Single unified preprocessing function for model inference - trim + repeat-pad to 480k
     private func preprocessAudioBuffer(_ inputBuffer: AVAudioPCMBuffer, targetSR: Double = 16000) -> AVAudioPCMBuffer? {
         do {
             // Step 1: Resample to target sample rate mono if needed
@@ -308,13 +308,38 @@ class TranslationEngine: ObservableObject {
                 resampledBuffer = try resampleAudio(buffer: inputBuffer, targetSampleRate: targetSR)
             }
             
-            let inputSamples = Int(resampledBuffer.frameLength)
-            let expectedSamples = 480_000
-            if inputSamples > expectedSamples {
-                print("Audio truncated from \(inputSamples) to \(expectedSamples) samples")
+            guard let inputPtr = resampledBuffer.floatChannelData?[0] else {
+                print("Failed to get input channel data")
+                return nil
             }
             
-            // Step 2: Create output buffer with exactly 480k samples
+            let originalSamples = Int(resampledBuffer.frameLength)
+            
+            // Step 2: Trim leading/trailing near-silence
+            let silenceThreshold: Float = 1e-3
+            var trimStart = 0
+            var trimEnd = originalSamples - 1
+            
+            // Find first non-silent sample
+            while trimStart < originalSamples && abs(inputPtr[trimStart]) < silenceThreshold {
+                trimStart += 1
+            }
+            
+            // Find last non-silent sample
+            while trimEnd >= trimStart && abs(inputPtr[trimEnd]) < silenceThreshold {
+                trimEnd -= 1
+            }
+            
+            // Ensure we have at least some audio
+            if trimStart >= originalSamples {
+                trimStart = 0
+                trimEnd = min(1000, originalSamples - 1) // Keep at least 1000 samples if available
+            }
+            
+            let trimmedSamples = trimEnd - trimStart + 1
+            let expectedSamples = 480_000
+            
+            // Step 3: Create output buffer with exactly 480k samples
             guard let outputBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(expectedSamples)) else {
                 print("Failed to create output buffer")
                 return nil
@@ -322,41 +347,42 @@ class TranslationEngine: ObservableObject {
             
             outputBuffer.frameLength = AVAudioFrameCount(expectedSamples)
             
-            guard let inputPtr = resampledBuffer.floatChannelData?[0],
-                  let outputPtr = outputBuffer.floatChannelData?[0] else {
-                print("Failed to get channel data")
+            guard let outputPtr = outputBuffer.floatChannelData?[0] else {
+                print("Failed to get output channel data")
                 return nil
             }
             
-            // Step 3: Normalize to [-1, 1] range
+            // Step 4: Normalize trimmed audio to [-1, 1] range
             var maxValue: Float = 0
-            for i in 0..<inputSamples {
+            for i in trimStart...trimEnd {
                 maxValue = max(maxValue, abs(inputPtr[i]))
             }
             let normalizationFactor = maxValue > 1e-6 ? 1.0 / maxValue : 1.0
             
-            // Step 4: Copy normalized samples and zero-pad tail to 480k
-            let copyCount = min(inputSamples, expectedSamples)
-            for i in 0..<copyCount {
-                outputPtr[i] = inputPtr[i] * normalizationFactor
-            }
-            
-            // Zero-pad the rest (ALWAYS pad, never repeat, never reject)
-            if copyCount < expectedSamples {
-                for i in copyCount..<expectedSamples {
-                    outputPtr[i] = 0.0
+            // Step 5: Fill 480k samples - repeat/tile if short, truncate if long
+            if trimmedSamples >= expectedSamples {
+                // Truncate to 480k samples
+                for i in 0..<expectedSamples {
+                    outputPtr[i] = inputPtr[trimStart + i] * normalizationFactor
                 }
-            }
-            
-            // Unified logging
-            let padCount = max(0, expectedSamples - inputSamples)
-            print("Preprocessed audio: \(inputSamples) samples at 16kHz")
-            if padCount > 0 {
-                print("Audio padded from \(inputSamples) to \(expectedSamples) samples")
+                print("Preprocessed audio: \(trimmedSamples) samples at 16kHz")
+                print("Audio truncated from \(trimmedSamples) to \(expectedSamples) samples")
+            } else {
+                // Repeat/tile the trimmed signal to fill 480k samples
+                var outputIndex = 0
+                while outputIndex < expectedSamples {
+                    for i in 0..<trimmedSamples {
+                        if outputIndex >= expectedSamples { break }
+                        outputPtr[outputIndex] = inputPtr[trimStart + i] * normalizationFactor
+                        outputIndex += 1
+                    }
+                }
+                print("Preprocessed audio: \(trimmedSamples) samples at 16kHz")
+                print("Audio repeat-padded from \(trimmedSamples) to \(expectedSamples) samples")
             }
             
             // Call diagnostics after preprocessing
-            diag(outputBuffer, paddedFrom: inputSamples)
+            diag(outputBuffer, paddedFrom: trimmedSamples)
             
             return outputBuffer
             
