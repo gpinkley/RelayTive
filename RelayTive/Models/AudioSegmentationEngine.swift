@@ -322,9 +322,48 @@ class AudioSegmentationEngine {
         let energyProfile = calculateEnergyProfile(audioBuffer: audioBuffer)
         let segmentBoundaries = findEnergyBasedBoundaries(energyProfile: energyProfile, totalDuration: totalDuration)
         
+        // Apply minimum duration constraints to prevent degenerate segments
+        let minDuration = SegmentationTuning.minDuration
+        let maxDuration = SegmentationTuning.maxDuration
+        
         var ranges: [SegmentRange] = []
-        for i in 0..<segmentBoundaries.count - 1 {
-            ranges.append(SegmentRange(startTime: segmentBoundaries[i], endTime: segmentBoundaries[i + 1]))
+        var i = 0
+        
+        while i < segmentBoundaries.count - 1 {
+            let startTime = segmentBoundaries[i]
+            var endTime = segmentBoundaries[i + 1]
+            var duration = endTime - startTime
+            
+            // If segment is too short, merge with next segment(s)
+            var lookAhead = 1
+            while duration < minDuration && (i + lookAhead + 1) < segmentBoundaries.count {
+                lookAhead += 1
+                endTime = segmentBoundaries[i + lookAhead]
+                duration = endTime - startTime
+            }
+            
+            // If segment is still too short after merging, extend to minDuration
+            if duration < minDuration {
+                endTime = min(startTime + minDuration, totalDuration)
+                duration = endTime - startTime
+            }
+            
+            // If segment is too long, split it
+            if duration > maxDuration {
+                let numSplits = Int(ceil(duration / maxDuration))
+                let splitDuration = duration / Double(numSplits)
+                
+                for j in 0..<numSplits {
+                    let splitStart = startTime + Double(j) * splitDuration
+                    let splitEnd = min(startTime + Double(j + 1) * splitDuration, endTime)
+                    ranges.append(SegmentRange(startTime: splitStart, endTime: splitEnd))
+                }
+            } else {
+                ranges.append(SegmentRange(startTime: startTime, endTime: endTime))
+            }
+            
+            // Skip the boundaries we've consumed
+            i += lookAhead
         }
         
         return ranges

@@ -86,33 +86,6 @@ struct TranslationView: View {
                 #endif
                 
                 Spacer()
-                
-                // Training examples info (read-only)
-                if dataManager.totalTrainingExamples > 0 {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Available Training Examples")
-                            .font(.headline)
-                        
-                        HStack {
-                            VStack(alignment: .leading) {
-                                Text("\(dataManager.totalTrainingExamples) trained phrases")
-                                    .font(.body)
-                                Text("\(Int(dataManager.embeddingsCompletionRate * 100))% processed")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
-                            
-                            Spacer()
-                            
-                            Text("Add more in Training tab")
-                                .font(.caption)
-                                .foregroundColor(.blue)
-                        }
-                    }
-                    .padding()
-                    .background(Color(.systemGray6))
-                    .cornerRadius(12)
-                }
             }
             .padding()
         }

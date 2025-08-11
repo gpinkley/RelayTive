@@ -247,6 +247,23 @@ class CompositionalMatcher {
         guard let (best, bestScore) = ranked.first else { return createNoMatchResult() }
         print("[Diag] Fallback top-5:", ranked.prefix(5).map { (ex, s) in "\(ex.typicalExplanation):\(String(format: "%.3f", s))" }.joined(separator: ", "))
         
+        // Check for degenerate embeddings (likely all silence/padding)
+        let embNorm = sqrt(wholeUtteranceEmbeddings.map { $0 * $0 }.reduce(0, +))
+        let zeroRatio = Float(wholeUtteranceEmbeddings.filter { abs($0) < 1e-6 }.count) / Float(wholeUtteranceEmbeddings.count)
+        
+        if embNorm < 1e-3 || zeroRatio > 0.5 {
+            print("[Diag] Rejecting match due to degenerate embeddings: embNorm=\(embNorm), zeroRatio=\(zeroRatio)")
+            return createNoMatchResult()
+        }
+        
+        // Also check if all top matches are suspiciously high (indicates silence matching)
+        let topScores = ranked.prefix(3).map { $0.1 }
+        let avgTopScore = topScores.reduce(0, +) / Float(topScores.count)
+        if avgTopScore > 0.95 && topScores.count >= 2 {
+            print("[Diag] Rejecting match due to suspiciously high similarities (likely silence): avgTop=\(avgTopScore)")
+            return createNoMatchResult()
+        }
+        
         if bestScore > config.fallbackSimilarityThreshold {
             print("  ✅ Found whole-utterance match with \(bestScore) similarity")
             
