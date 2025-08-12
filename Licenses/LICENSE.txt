@@ -20,3 +20,25 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Licenses & Acknowledgements
+
+**App & Library Code**
+© 2025 Auteuristic Systems, Inc. All rights reserved.
+Unless otherwise noted, source code in this repository is copyright Auteuristic Systems, Inc.
+
+**Apple Frameworks**
+AVFoundation and Accelerate/vDSP are used under Apple’s Developer Program License Agreement.
+
+**Speech Embedding Model (HuBERT)**
+This demo uses HuBERT for frame-level embeddings.
+Paper: Hsu et al., “HuBERT: Self-Supervised Speech Representation Learning by Masked Prediction” (2021).
+HuBERT base LS-960 model weights
+Source: facebook/hubert-base-ls960
+License: Apache License 2.0
+Copyright: Meta Platforms, Inc.
+
+Model card: https://huggingface.co/facebook/hubert-base-ls960
+
+
+**Fonts (if included)**
+Charis SIL — SIL Open Font License 1.1. Include `OFL.txt` in `Licenses/`.

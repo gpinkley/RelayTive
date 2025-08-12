@@ -9,6 +9,5 @@ build/
 *.xcuserstate
 *.swp
 
-*.md
-*.txt
-*.rtf
+*.log
+
