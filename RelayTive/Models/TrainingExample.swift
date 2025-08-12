@@ -16,6 +16,9 @@ struct TrainingExample: Identifiable, Codable {
     var audioEmbeddings: [Float]?        // HuBERT embeddings for the atypical audio (computed once, cached)
     var audioFileURL: URL?               // Persistent audio file URL for full recordings
     
+    // Phonetic data
+    var phoneticForm: PhoneticForm?      // Phonetic transcription and metadata
+    
     init(atypicalAudio: Data, typicalExplanation: String, timestamp: Date = Date(), isVerified: Bool = false) {
         self.id = UUID()
         self.atypicalAudio = atypicalAudio
@@ -24,9 +27,10 @@ struct TrainingExample: Identifiable, Codable {
         self.isVerified = isVerified
         self.audioEmbeddings = nil
         self.audioFileURL = nil
+        self.phoneticForm = nil
     }
     
-    init(id: UUID, atypicalAudio: Data, typicalExplanation: String, timestamp: Date, isVerified: Bool = false, audioEmbeddings: [Float]? = nil, audioFileURL: URL? = nil) {
+    init(id: UUID, atypicalAudio: Data, typicalExplanation: String, timestamp: Date, isVerified: Bool = false, audioEmbeddings: [Float]? = nil, audioFileURL: URL? = nil, phoneticForm: PhoneticForm? = nil) {
         self.id = id
         self.atypicalAudio = atypicalAudio
         self.typicalExplanation = typicalExplanation
@@ -34,6 +38,7 @@ struct TrainingExample: Identifiable, Codable {
         self.isVerified = isVerified
         self.audioEmbeddings = audioEmbeddings
         self.audioFileURL = audioFileURL
+        self.phoneticForm = phoneticForm
     }
 }
 
@@ -48,8 +53,16 @@ extension TrainingExample {
         return audioEmbeddings != nil && !audioEmbeddings!.isEmpty
     }
     
+    var hasPhoneticForm: Bool {
+        return phoneticForm != nil
+    }
+    
     mutating func setEmbeddings(_ embeddings: [Float]) {
         self.audioEmbeddings = embeddings
+    }
+    
+    mutating func setPhoneticForm(_ form: PhoneticForm) {
+        self.phoneticForm = form
     }
     
     /// Migrate audio data to file URL if needed
@@ -104,6 +117,72 @@ struct TranslationSession {
 }
 
 // MARK: - Training Data Management
+// MARK: - Phonetic Form
+struct PhoneticForm: Codable {
+    let unitIDs: [Int]                  // Discrete phonetic unit IDs
+    let unitString: String              // "U12 U7 U3" format
+    let canonicalUnitsString: String    // Canonical/cleaned version
+    let readableSpelling: String?       // Optional symbol mapping
+    let confidence: Float               // Transcription confidence
+    let timestamp: Date                 // When transcribed
+    
+    init(unitIDs: [Int], unitString: String, readableSpelling: String? = nil, confidence: Float = 1.0) {
+        self.unitIDs = unitIDs
+        self.unitString = unitString
+        self.canonicalUnitsString = unitString // Could be different after processing
+        self.readableSpelling = readableSpelling
+        self.confidence = confidence
+        self.timestamp = Date()
+    }
+}
+
+// MARK: - User Profile
+struct UserProfile: Codable {
+    var phoneticData: PhoneticProfileData?
+    var preferences: UserPreferences
+    var lastUpdated: Date
+    
+    init() {
+        self.phoneticData = nil
+        self.preferences = UserPreferences()
+        self.lastUpdated = Date()
+    }
+}
+
+struct UserPreferences: Codable {
+    var confidenceThreshold: Float = 0.70
+    var enablePhoneticTranscription: Bool = true
+    var debugMode: Bool = false
+    
+    init() {}
+}
+
+struct PhoneticProfileData: Codable {
+    let codebook: [[Float]]             // K-means centroids
+    let unitToSymbol: [String: String]  // Unit ID -> symbol mapping (string keys for JSON)
+    let meaningCentroids: [String: [Float]]     // Meaning -> centroid mapping
+    let phoneticPrototypes: [String: [String]]  // Meaning -> phonetic prototypes
+    let lastUpdated: Date
+    
+    init(codebook: [[Float]], unitToSymbol: [Int: String], meaningCentroids: [String: [Float]], phoneticPrototypes: [String: [String]]) {
+        self.codebook = codebook
+        self.unitToSymbol = unitToSymbol.reduce(into: [:]) { result, pair in
+            result[String(pair.key)] = pair.value
+        }
+        self.meaningCentroids = meaningCentroids
+        self.phoneticPrototypes = phoneticPrototypes
+        self.lastUpdated = Date()
+    }
+    
+    func getUnitToSymbolMap() -> [Int: String] {
+        return unitToSymbol.reduce(into: [:]) { result, pair in
+            if let key = Int(pair.key) {
+                result[key] = pair.value
+            }
+        }
+    }
+}
+
 class TrainingDataManager {
     private let embeddingsSimilarityThreshold: Float = 0.70
     

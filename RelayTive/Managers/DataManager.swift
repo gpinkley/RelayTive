@@ -7,6 +7,7 @@
 
 import Foundation
 import SwiftUI
+import AVFoundation
 
 @MainActor
 class DataManager: ObservableObject {
@@ -27,6 +28,10 @@ class DataManager: ObservableObject {
     private var pendingDiscoveryTask: Task<Void, Never>? // Debounce task
     private var newExampleCount = 0 // Track new examples for triggering discovery
     
+    // Phonetic pipeline components
+    private var phoneticEngine: PhoneticTranscriptionEngine?
+    private var phoneticClassifier: NearestCentroidClassifier?
+    
     init() {
         loadTrainingExamples()
         loadCompositionalPatterns()
@@ -45,6 +50,15 @@ class DataManager: ObservableObject {
         }
         
         print("✅ Compositional pipeline initialized")
+    }
+    
+    func initializePhoneticPipeline(with translationEngine: TranslationEngine) {
+        print("🚀 Initializing phonetic pipeline")
+        
+        phoneticEngine = PhoneticTranscriptionEngine(translationEngine: translationEngine, embeddingDim: 768, k: 160)
+        phoneticClassifier = NearestCentroidClassifier()
+        
+        print("✅ Phonetic pipeline initialized")
     }
     
     // MARK: - Training Example Management (Persistent Data)
@@ -79,35 +93,131 @@ class DataManager: ObservableObject {
     
     // MARK: - Translation Lookup (Compositional + Fallback)
     
-    /// Enhanced translation lookup using compositional patterns with fallback to whole-utterance matching
+    /// Enhanced translation lookup using phonetic pipeline with compositional and traditional fallbacks
     func findTranslationForAudio(_ audioData: Data, embeddings: [Float], using translationEngine: TranslationEngine) async -> (translation: String, confidence: Float)? {
         
-        // Ensure compositional pipeline is initialized
+        // Ensure pipelines are initialized
         if segmentationEngine == nil {
             initializeCompositionalPipeline(with: translationEngine)
         }
-        
-        guard let matcher = compositionalMatcher else {
-            print("⚠️ Compositional matcher not available, falling back to traditional matching")
-            return findTranslationForEmbeddings(embeddings)
+        if phoneticEngine == nil {
+            initializePhoneticPipeline(with: translationEngine)
         }
         
-        // Pattern matching re-enabled with fixes
-        
-        // Try compositional matching first
-        print("🎯 Attempting compositional pattern matching")
-        let matchResult = await matcher.matchAudio(audioData, 
-                                                 against: compositionalPatterns, 
-                                                 fallbackExamples: examplesWithEmbeddings)
-        
-        if matchResult.hasMatches {
-            print("✅ Compositional match found: \(matchResult.reconstructedTranslation) (confidence: \(matchResult.overallConfidence))")
-            return (matchResult.reconstructedTranslation, matchResult.overallConfidence)
+        // Try phonetic classification first (most accurate)
+        if let phoneticResult = await tryPhoneticClassification(audioData, using: translationEngine) {
+            print("✅ Phonetic classification match: \(phoneticResult.translation) (confidence: \(phoneticResult.confidence))")
+            return phoneticResult
         }
         
-        // Fallback to traditional whole-utterance matching
-        print("🔄 Compositional matching failed, using traditional approach")
+        // Fallback to compositional matching
+        if let matcher = compositionalMatcher {
+            print("🎯 Attempting compositional pattern matching")
+            let matchResult = await matcher.matchAudio(audioData, 
+                                                     against: compositionalPatterns, 
+                                                     fallbackExamples: examplesWithEmbeddings)
+            
+            if matchResult.hasMatches {
+                print("✅ Compositional match found: \(matchResult.reconstructedTranslation) (confidence: \(matchResult.overallConfidence))")
+                return (matchResult.reconstructedTranslation, matchResult.overallConfidence)
+            }
+        }
+        
+        // Final fallback to traditional whole-utterance matching
+        print("🔄 Using traditional embedding matching")
         return findTranslationForEmbeddings(embeddings)
+    }
+    
+    /// Try phonetic classification approach
+    private func tryPhoneticClassification(_ audioData: Data, using translationEngine: TranslationEngine) async -> (translation: String, confidence: Float)? {
+        guard let engine = phoneticEngine,
+              let classifier = phoneticClassifier else {
+            return nil
+        }
+        
+        // Convert audioData to buffer
+        guard let buffer = createAudioBufferFromData(audioData) else {
+            return nil
+        }
+        
+        // Get phonetic transcription
+        let tx = await engine.transcribe(buffer: buffer)
+        
+        guard !tx.unitString.isEmpty else {
+            return nil
+        }
+        
+        // Classify using embedding (extract from first chunk if available)
+        let embedding = await extractRepresentativeEmbedding(from: buffer, using: translationEngine)
+        
+        guard let embeddingVector = embedding else {
+            return nil
+        }
+        
+        // Classify with phonetic string fusion
+        let classification = classifier.classify(
+            embedding: embeddingVector,
+            phoneticString: tx.unitString
+        )
+        
+        if let meaning = classification.topMeaning, !classification.needsConfirmation {
+            return (meaning, classification.confidence)
+        }
+        
+        return nil
+    }
+    
+    /// Handle caregiver confirmation for phonetic pipeline
+    func confirmPhoneticTranslation(audioData: Data, meaning: String, using translationEngine: TranslationEngine) async {
+        guard let engine = phoneticEngine,
+              let classifier = phoneticClassifier else {
+            return
+        }
+        
+        guard let buffer = createAudioBufferFromData(audioData) else {
+            return
+        }
+        
+        // Get phonetic transcription
+        let tx = await engine.transcribe(buffer: buffer)
+        
+        // Extract embedding
+        if let embedding = await extractRepresentativeEmbedding(from: buffer, using: translationEngine) {
+            // Update classifier with confirmed example
+            classifier.updateWithExample(
+                meaning: meaning,
+                embedding: embedding,
+                phoneticString: tx.unitString
+            )
+            
+            print("🎯 Phonetic classifier updated with confirmed example: '\(meaning)'")
+        }
+    }
+    
+    private func createAudioBufferFromData(_ audioData: Data) -> AVAudioPCMBuffer? {
+        // Simplified buffer creation - assumes 16kHz mono PCM
+        let frameCount = audioData.count / 2
+        guard let format = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1),
+              let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frameCount)) else {
+            return nil
+        }
+        
+        buffer.frameLength = AVAudioFrameCount(frameCount)
+        
+        audioData.withUnsafeBytes { bytes in
+            let int16Ptr = bytes.bindMemory(to: Int16.self)
+            let floatPtr = buffer.floatChannelData![0]
+            
+            for i in 0..<frameCount {
+                floatPtr[i] = Float(int16Ptr[i]) / 32768.0
+            }
+        }
+        
+        return buffer
+    }
+    
+    private func extractRepresentativeEmbedding(from buffer: AVAudioPCMBuffer, using translationEngine: TranslationEngine) async -> [Float]? {
+        return await translationEngine.extractFrameEmbedding(from: buffer)
     }
     
     /// Legacy method for whole-utterance matching (kept for backwards compatibility)

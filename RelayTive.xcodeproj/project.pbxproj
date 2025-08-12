@@ -29,6 +29,8 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
+		560045E02E4B4378006DC213 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
+		560045E12E4B4378006DC213 /* Accelerate.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Accelerate.framework; path = System/Library/Frameworks/Accelerate.framework; sourceTree = SDKROOT; };
 		56F360502E4457FA0065012C /* RelayTive.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RelayTive.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		56F3605D2E4457FC0065012C /* RelayTiveTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayTiveTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		56F360672E4457FC0065012C /* RelayTiveUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = RelayTiveUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -103,6 +105,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		560045DF2E4B4378006DC213 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				560045E12E4B4378006DC213 /* Accelerate.framework */,
+				560045E02E4B4378006DC213 /* AVFoundation.framework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		56F360472E4457FA0065012C = {
 			isa = PBXGroup;
 			children = (
@@ -111,6 +122,7 @@
 				56F360522E4457FA0065012C /* RelayTive */,
 				56F360602E4457FC0065012C /* RelayTiveTests */,
 				56F3606A2E4457FC0065012C /* RelayTiveUITests */,
+				560045DF2E4B4378006DC213 /* Frameworks */,
 				56F360512E4457FA0065012C /* Products */,
 			);
 			sourceTree = "<group>";

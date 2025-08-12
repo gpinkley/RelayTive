@@ -196,6 +196,47 @@ class TranslationEngine: ObservableObject {
         return preprocessForSegmentation(buffer, targetSR: 16000)
     }
     
+    /// Extract frame-level embeddings using tiling approach for short frames
+    func extractFrameEmbedding(from buffer: AVAudioPCMBuffer) async -> [Float]? {
+        isProcessing = true
+        defer { isProcessing = false }
+        
+        guard let model = hubertModel else {
+            print("HuBERT model not loaded")
+            return nil
+        }
+        
+        // Use tiling approach for frame-level extraction
+        let targetSamples = expectedInputSize  // 480k samples
+        let currentSamples = Int(buffer.frameLength)
+        
+        // Create target buffer with tiling/repetition
+        guard let targetFormat = AVAudioFormat(standardFormatWithSampleRate: 16000, channels: 1),
+              let tiledBuffer = AVAudioPCMBuffer(pcmFormat: targetFormat, frameCapacity: AVAudioFrameCount(targetSamples)) else {
+            print("Failed to create tiled buffer")
+            return nil
+        }
+        
+        tiledBuffer.frameLength = AVAudioFrameCount(targetSamples)
+        
+        guard let sourcePtr = buffer.floatChannelData?[0],
+              let targetPtr = tiledBuffer.floatChannelData?[0] else {
+            print("Failed to get channel data")
+            return nil
+        }
+        
+        // Tile/repeat the frame to fill target buffer
+        var targetIndex = 0
+        while targetIndex < targetSamples {
+            let copyLength = min(currentSamples, targetSamples - targetIndex)
+            memcpy(targetPtr.advanced(by: targetIndex), sourcePtr, copyLength * MemoryLayout<Float>.size)
+            targetIndex += copyLength
+        }
+        
+        // Extract embeddings using existing pipeline
+        return extractHuBERTEmbeddings(from: tiledBuffer, using: model)
+    }
+    
     /// Legacy Data-based method - only for real files with headers
     func extractEmbeddings(_ audioData: Data) async -> [Float]? {
         // Check if this is a RIFF/WAVE file (real file with headers)
