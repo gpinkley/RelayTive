@@ -129,33 +129,25 @@ struct OnboardingView: View {
         permissionError = nil
         
         Task {
-            do {
-                // Request both permissions
-                let micGranted = await requestMicrophonePermission()
-                let speechGranted = await requestSpeechPermission()
-                
-                await MainActor.run {
-                    if micGranted && speechGranted {
-                        // Success - complete onboarding
-                        onComplete()
-                    } else {
-                        // Handle denied permissions
-                        var errors: [String] = []
-                        if !micGranted {
-                            errors.append("Microphone access is required to record your speech")
-                        }
-                        if !speechGranted {
-                            errors.append("Speech recognition is required to understand explanations")
-                        }
-                        
-                        permissionError = errors.joined(separator: "\n")
-                        isRequestingPermissions = false
+            // Request both permissions
+            let micGranted = await requestMicrophonePermission()
+            let speechGranted = await requestSpeechPermission()
+            
+            await MainActor.run {
+                if micGranted && speechGranted {
+                    // Success - complete onboarding
+                    onComplete()
+                } else {
+                    // Handle denied permissions
+                    var errors: [String] = []
+                    if !micGranted {
+                        errors.append("Microphone access is required to record your speech")
                     }
-                }
-                
-            } catch {
-                await MainActor.run {
-                    permissionError = "Permission request failed: \(error.localizedDescription)"
+                    if !speechGranted {
+                        errors.append("Speech recognition is required to understand explanations")
+                    }
+                    
+                    permissionError = errors.joined(separator: "\n")
                     isRequestingPermissions = false
                 }
             }

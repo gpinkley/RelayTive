@@ -183,7 +183,7 @@ struct TrainingView: View {
                 return
             }
             
-            print("✅ Successfully extracted \\(embeddings.count) embedding dimensions")
+            print("✅ Successfully extracted \(embeddings.count) embedding dimensions")
             
             // Create TrainingExample with pre-computed embeddings
             await MainActor.run {
